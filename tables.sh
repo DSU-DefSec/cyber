@@ -1,6 +1,12 @@
 #!/bin/bash
 # deploys the firewall and locks down remote access
 
+# fail if iptables not working
+if ! command -v iptables &>/dev/null || ! iptables -L &>/dev/null; then
+    echo "iptables not found or not working, exiting"
+    exit 1
+fi
+
 # Initialize arrays for each direction/protocol
 INPUT_UDP=()
 INPUT_TCP=()
