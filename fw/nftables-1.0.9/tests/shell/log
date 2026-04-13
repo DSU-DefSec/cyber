@@ -1,0 +1,41 @@
+I: conf: NFT=./../../src/nft
+I: conf: NFT_REAL=./../../src/nft
+I: conf: VERBOSE=n
+I: conf: DUMPGEN=n
+I: conf: VALGRIND=n
+I: conf: KMEMLEAK=n
+I: conf: NFT_TEST_HAS_REALROOT=y
+I: conf: NFT_TEST_HAS_SOCKET_LIMITS=n
+I: conf: NFT_TEST_UNSHARE_CMD=unshare\ -f\ -n\ -m
+I: conf: NFT_TEST_HAS_UNSHARED=y
+I: conf: NFT_TEST_HAS_UNSHARED_MOUNT=y
+I: conf: NFT_TEST_KEEP_LOGS=n
+I: conf: NFT_TEST_JOBS=12
+I: conf: NFT_TEST_FAIL_ON_SKIP=n
+I: conf: NFT_TEST_RANDOM_SEED=975674303
+I: conf: NFT_TEST_SHUFFLE_TESTS=y
+I: conf: TMPDIR=/tmp
+
+I: conf: NFT_TEST_SKIP_slow=n
+I: conf: NFT_TEST_HAVE_bitshift=y
+I: conf: NFT_TEST_HAVE_catchall_element=y
+I: conf: NFT_TEST_HAVE_chain_binding=y
+I: conf: NFT_TEST_HAVE_ctexpect=y
+I: conf: NFT_TEST_HAVE_cttimeout=y
+I: conf: NFT_TEST_HAVE_destroy=y
+I: conf: NFT_TEST_HAVE_inet_ingress=y
+I: conf: NFT_TEST_HAVE_inner_matching=y
+I: conf: NFT_TEST_HAVE_json=y
+I: conf: NFT_TEST_HAVE_map_lookup=y
+I: conf: NFT_TEST_HAVE_netdev_chain_without_device=y
+I: conf: NFT_TEST_HAVE_netdev_egress=y
+I: conf: NFT_TEST_HAVE_osf=y
+I: conf: NFT_TEST_HAVE_reset_rule=y
+I: conf: NFT_TEST_HAVE_reset_set=y
+I: conf: NFT_TEST_HAVE_sctp_chunks=y
+I: conf: NFT_TEST_HAVE_set_with_two_expressions=y
+I: conf: NFT_TEST_HAVE_table_flag_owner=y
+
+I: info: NFT_TEST_BASEDIR=.
+I: info: NFT_TEST_TMPDIR=/tmp/nft-test.20231013-172649.494.0MPMPC
+
