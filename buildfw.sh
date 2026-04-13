@@ -29,10 +29,24 @@ for tool in gcc make ar ld; do
     fi
 done
 
+# Touch autotools-generated files in dependency order so make won't try
+# to regenerate them (which would require aclocal/autoconf/automake).
+# Order matters: sources first, then generated files newer than sources.
+fix_autotools_timestamps() {
+    find . -name 'configure.ac' -exec touch {} +
+    find . -name 'Makefile.am'  -exec touch {} +
+    find . -name 'acinclude.m4' -exec touch {} + 2>/dev/null || true
+    find . -name 'aclocal.m4'   -exec touch {} +
+    find . -name 'configure'    -exec touch {} +
+    find . -name 'config.h.in'  -exec touch {} +
+    find . -name 'Makefile.in'  -exec touch {} +
+}
+
 build() {
     local dir=$1; shift
     cd "$REPO_DIR/$dir"
     make distclean >/dev/null 2>&1 || true
+    fix_autotools_timestamps
     ./configure --prefix="$OUTPUT" --enable-static --disable-shared "$@"
     make -j"$(nproc)"
     make install
@@ -46,6 +60,7 @@ echo "[2/3] libnftnl"
 # passing LIBMNL_CFLAGS/LIBMNL_LIBS explicitly so we don't need pkg-config.
 cd "$REPO_DIR/libnftnl-1.2.6"
 make distclean >/dev/null 2>&1 || true
+fix_autotools_timestamps
 ./configure --prefix="$OUTPUT" --enable-static --disable-shared \
     LIBMNL_CFLAGS="-I$OUTPUT/include" \
     LIBMNL_LIBS="-L$OUTPUT/lib -lmnl"
@@ -55,10 +70,12 @@ make install
 echo "[3/3] nftables"
 cd "$REPO_DIR/nftables-1.0.9"
 make distclean >/dev/null 2>&1 || true
+fix_autotools_timestamps
 
 # Mark pre-generated parser/scanner files as up-to-date so make never
 # tries to regenerate them from the .y/.l sources. This eliminates the
-# build-time dependency on bison and flex.
+# build-time dependency on bison and flex. Must come AFTER
+# fix_autotools_timestamps so these stay the newest files in the tree.
 touch src/parser_bison.c src/parser_bison.h src/scanner.c
 
 ./configure --prefix="$OUTPUT" \

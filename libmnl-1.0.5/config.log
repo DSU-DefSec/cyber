@@ -410,16 +410,22 @@ config.status:1106: creating libmnl.pc
 config.status:1106: creating doxygen.cfg
 config.status:1106: creating doxygen/Makefile
 config.status:1106: creating config.h
+config.status:1287: config.h is unchanged
 config.status:1335: executing depfiles commands
 config.status:1410: cd src       && sed -e '/# am--include-marker/d' Makefile         | make -f - am--depfiles
+make: Nothing to be done for 'am--depfiles'.
 config.status:1417: $? = 0
 config.status:1410: cd examples/genl       && sed -e '/# am--include-marker/d' Makefile         | make -f - am--depfiles
+make: Nothing to be done for 'am--depfiles'.
 config.status:1417: $? = 0
 config.status:1410: cd examples/kobject       && sed -e '/# am--include-marker/d' Makefile         | make -f - am--depfiles
+make: Nothing to be done for 'am--depfiles'.
 config.status:1417: $? = 0
 config.status:1410: cd examples/netfilter       && sed -e '/# am--include-marker/d' Makefile         | make -f - am--depfiles
+make: Nothing to be done for 'am--depfiles'.
 config.status:1417: $? = 0
 config.status:1410: cd examples/rtnl       && sed -e '/# am--include-marker/d' Makefile         | make -f - am--depfiles
+make: Nothing to be done for 'am--depfiles'.
 config.status:1417: $? = 0
 config.status:1335: executing libtool commands
 
