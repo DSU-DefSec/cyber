@@ -46,6 +46,14 @@ RULES=$(mktemp); trap 'rm -f "$RULES"' EXIT
     echo '}'
 } > "$RULES"
 
+# shove aside any other firewall manager so it can't re-assert rules
+# on top of ours (firewalld on rocky, ufw/nftables.service elsewhere)
+for svc in firewalld ufw nftables iptables ip6tables; do
+    systemctl stop    "$svc" 2>/dev/null || true
+    systemctl disable "$svc" 2>/dev/null || true
+    systemctl mask    "$svc" 2>/dev/null || true
+done
+
 "$NFT" -f "$RULES"
 
 # persist + lock
