@@ -84,12 +84,19 @@ touch src/parser_bison.c src/parser_bison.h src/scanner.c
     LIBMNL_CFLAGS="-I$OUTPUT/include"   LIBMNL_LIBS="-L$OUTPUT/lib -lmnl" \
     LIBNFTNL_CFLAGS="-I$OUTPUT/include" LIBNFTNL_LIBS="-L$OUTPUT/lib -lnftnl"
 
-# -all-static tells libtool to produce a fully static final executable.
-make -j"$(nproc)" LDFLAGS="-all-static -L$OUTPUT/lib"
-make install
+# Build only src/ — we want the nft binary, nothing else. Skips doc/
+# (man pages via a2x/asciidoc), examples/, py/, etc.
+# -all-static forces libtool to produce a fully static final executable.
+make -C src -j"$(nproc)" LDFLAGS="-all-static -L$OUTPUT/lib"
+
+# Drop the finished binary in the repo root. It's fully static — no
+# other files are needed alongside it.
+cp src/nft "$REPO_DIR/nft"
 
 echo
-echo "Built: $OUTPUT/sbin/nft"
-file "$OUTPUT/sbin/nft" || true
-ls -lh "$OUTPUT/sbin/nft"
-"$OUTPUT/sbin/nft" --version || true
+echo "Built: $REPO_DIR/nft"
+file "$REPO_DIR/nft" || true
+ls -lh "$REPO_DIR/nft"
+"$REPO_DIR/nft" --version || true
+
+rm -rf "$REPO_DIR/output"

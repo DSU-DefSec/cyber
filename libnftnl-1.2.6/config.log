@@ -455,16 +455,12 @@ config.status:1102: creating tests/Makefile
 config.status:1102: creating libnftnl.pc
 config.status:1102: creating doxygen.cfg
 config.status:1102: creating config.h
-config.status:1283: config.h is unchanged
 config.status:1331: executing depfiles commands
 config.status:1406: cd src       && sed -e '/# am--include-marker/d' Makefile         | make -f - am--depfiles
-make: Nothing to be done for 'am--depfiles'.
 config.status:1413: $? = 0
 config.status:1406: cd examples       && sed -e '/# am--include-marker/d' Makefile         | make -f - am--depfiles
-make: Nothing to be done for 'am--depfiles'.
 config.status:1413: $? = 0
 config.status:1406: cd tests       && sed -e '/# am--include-marker/d' Makefile         | make -f - am--depfiles
-make: Nothing to be done for 'am--depfiles'.
 config.status:1413: $? = 0
 config.status:1331: executing libtool commands
 
