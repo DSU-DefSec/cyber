@@ -1,9 +1,9 @@
 a mix of custom and open source software/scripts for automatically securing ncae cyber games machines
 
-/src - custom scripts
+. - custom scripts
 /open - open source components, for which the below notice applies.
 
-NOTICE - This repository redistributes the following GPLv2-licensed components:
+NOTICE - This repository redistributes the following GPLv2-licensed components in the /open directory:
 
 • BusyBox (unmodified static binary) — obtained from https://busybox.net/
 • nft (statically built binary) with unmodified source for the following, obtained from https://www.netfilter.org/pub/:
@@ -14,4 +14,4 @@ NOTICE - This repository redistributes the following GPLv2-licensed components:
 
 For any GPLv2-licensed binary included in this repository for which complete source code is not included, source code is available upon written request.
 
-A copy of the GNU General Public License v2.0 is included in this repository.
+A copy of the GNU General Public License v2.0 is included in the /open directory of this repository. This license applies solely to the contents of that directory.
