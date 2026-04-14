@@ -43,6 +43,21 @@ if [[ ! -d "$BACKUP_DIR" ]]; then
     exit 1
 fi
 
+# Detect distro family — used to pick the right unit/path on each service
+DISTRO_ID=""
+DISTRO_LIKE=""
+if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    DISTRO_ID="${ID:-}"
+    DISTRO_LIKE="${ID_LIKE:-}"
+fi
+case "${DISTRO_LIKE:-$DISTRO_ID}" in
+    *debian*|*ubuntu*) DISTRO_FAMILY="debian" ;;
+    *rhel*|*fedora*|*centos*|rocky|almalinux) DISTRO_FAMILY="rhel" ;;
+    *) DISTRO_FAMILY="unknown" ;;
+esac
+
 # If "all" passed, auto-detect services from backup subdirectory names
 if [[ "$*" == "all" || "$*" == "ALL" ]]; then
     SERVICES=()
@@ -64,15 +79,19 @@ if [[ "$*" == "all" || "$*" == "ALL" ]]; then
 fi
 
 LOG="$BACKUP_DIR/RESTORE_LOG_$(date +%Y%m%d_%H%M%S).txt"
-echo "Restore started: $(date)" >  "$LOG"
-echo "Host: $(hostname)"        >> "$LOG"
-echo "Backup dir: $BACKUP_DIR"  >> "$LOG"
-echo "Services: $*"             >> "$LOG"
-echo ""                         >> "$LOG"
+{
+    echo "Restore started: $(date)"
+    echo "Host: $(hostname)"
+    echo "Distro: ${DISTRO_ID:-unknown} (family: $DISTRO_FAMILY)"
+    echo "Backup dir: $BACKUP_DIR"
+    echo "Services: $*"
+    echo ""
+} > "$LOG"
 
 echo -e "${CYAN}============================================${NC}"
 echo -e "${CYAN} Restore started: $(date)${NC}"
-echo -e "${CYAN} Source: $BACKUP_DIR${NC}"
+echo -e "${CYAN} Source:  $BACKUP_DIR${NC}"
+echo -e "${CYAN} Distro:  ${DISTRO_ID:-unknown} ($DISTRO_FAMILY)${NC}"
 echo -e "${CYAN} Services: $*${NC}"
 echo -e "${CYAN}============================================${NC}\n"
 
@@ -88,16 +107,18 @@ restore_dir_clean() {
     local owner="${3:-}"
 
     if [[ ! -d "$src" ]]; then
-        echo -e "  ${YELLOW}[~] Not in backup, skipping:${NC} $src"
         return 0
     fi
 
     echo -e "  ${GREEN}[+]${NC} $dest"
     rm -rf "$dest"
     mkdir -p "$(dirname "$dest")"
-    cp -rp "$src" "$dest" \
-        && echo -e "     ${GREEN}✓ Restored${NC}" \
-        || { echo -e "     ${RED}✗ Failed${NC}"; return 1; }
+    if cp -rp "$src" "$dest"; then
+        echo -e "     ${GREEN}✓ Restored${NC}"
+    else
+        echo -e "     ${RED}✗ Failed${NC}"
+        return 1
+    fi
 
     [[ -n "$owner" ]] && chown -R "$owner" "$dest" 2>/dev/null
     echo "  RESTORE DIR (clean): $src -> $dest" >> "$LOG"
@@ -110,15 +131,17 @@ restore_dir_merge() {
     local owner="${3:-}"
 
     if [[ ! -d "$src" ]]; then
-        echo -e "  ${YELLOW}[~] Not in backup, skipping:${NC} $src"
         return 0
     fi
 
     echo -e "  ${GREEN}[+]${NC} $dest (merge)"
     mkdir -p "$dest"
-    cp -rp "$src/." "$dest/" \
-        && echo -e "     ${GREEN}✓ Restored${NC}" \
-        || { echo -e "     ${RED}✗ Failed${NC}"; return 1; }
+    if cp -rp "$src/." "$dest/"; then
+        echo -e "     ${GREEN}✓ Restored${NC}"
+    else
+        echo -e "     ${RED}✗ Failed${NC}"
+        return 1
+    fi
 
     [[ -n "$owner" ]] && chown -R "$owner" "$dest" 2>/dev/null
     echo "  RESTORE DIR (merge): $src -> $dest" >> "$LOG"
@@ -132,19 +155,40 @@ restore_file() {
     local mode="${4:-}"
 
     if [[ ! -f "$src" ]]; then
-        echo -e "  ${YELLOW}[~] Not in backup, skipping:${NC} $src"
         return 0
     fi
 
     echo -e "  ${GREEN}[+]${NC} $dest"
     mkdir -p "$(dirname "$dest")"
-    cp -p "$src" "$dest" \
-        && echo -e "     ${GREEN}✓ Restored${NC}" \
-        || { echo -e "     ${RED}✗ Failed${NC}"; return 1; }
+    if cp -p "$src" "$dest"; then
+        echo -e "     ${GREEN}✓ Restored${NC}"
+    else
+        echo -e "     ${RED}✗ Failed${NC}"
+        return 1
+    fi
 
     [[ -n "$owner" ]] && chown "$owner" "$dest" 2>/dev/null
     [[ -n "$mode" ]]  && chmod "$mode"  "$dest" 2>/dev/null
     echo "  RESTORE FILE: $src -> $dest" >> "$LOG"
+}
+
+# Restore systemd drop-in directories from backup's dropins/ subdir into
+# /etc/systemd/system/. Triggers daemon-reload at the end if anything copied.
+restore_dropins() {
+    local dropdir="$1"
+    [[ -d "$dropdir" ]] || return 0
+    local copied=0
+    for d in "$dropdir"/*.service.d; do
+        [[ -d "$d" ]] || continue
+        local name
+        name=$(basename "$d")
+        echo -e "  ${GREEN}[+]${NC} drop-in: /etc/systemd/system/$name"
+        rm -rf "/etc/systemd/system/$name"
+        cp -rp "$d" "/etc/systemd/system/$name" 2>/dev/null && copied=1
+        echo "  RESTORE DROPIN: $d -> /etc/systemd/system/$name" >> "$LOG"
+    done
+    (( copied )) && systemctl daemon-reload 2>/dev/null
+    return 0
 }
 
 # Detect the active systemd unit name for a service (handles distro naming differences).
@@ -161,16 +205,18 @@ svc_stop() {
     local unit="$1"
     [[ -z "$unit" ]] && return
     echo -e "  ${YELLOW}[*] Stopping $unit...${NC}"
-    systemctl stop "$unit" 2>/dev/null
+    systemctl stop "$unit" 2>/dev/null || true
 }
 
 svc_start() {
     local unit="$1"
     [[ -z "$unit" ]] && return
     echo -e "  ${YELLOW}[*] Starting $unit...${NC}"
-    systemctl start "$unit" 2>/dev/null \
-        && echo -e "  ${GREEN}[+] $unit started${NC}" \
-        || echo -e "  ${RED}[-] Failed to start $unit — check: systemctl status $unit${NC}"
+    if systemctl start "$unit" 2>/dev/null; then
+        echo -e "  ${GREEN}[+] $unit started${NC}"
+    else
+        echo -e "  ${RED}[-] Failed to start $unit — check: systemctl status $unit${NC}"
+    fi
 }
 
 # Reload preferred over restart — avoids dropping active connections (critical for SSH).
@@ -178,12 +224,16 @@ svc_reload() {
     local unit="$1"
     [[ -z "$unit" ]] && return
     echo -e "  ${YELLOW}[*] Reloading $unit config...${NC}"
-    systemctl reload "$unit" 2>/dev/null \
-        && echo -e "  ${GREEN}[+] $unit reloaded${NC}" \
-        || { echo -e "  ${YELLOW}[~] Reload unsupported, falling back to restart...${NC}"
-             systemctl restart "$unit" 2>/dev/null \
-                && echo -e "  ${GREEN}[+] $unit restarted${NC}" \
-                || echo -e "  ${RED}[-] Failed — check: systemctl status $unit${NC}"; }
+    if systemctl reload "$unit" 2>/dev/null; then
+        echo -e "  ${GREEN}[+] $unit reloaded${NC}"
+    else
+        echo -e "  ${YELLOW}[~] Reload unsupported, falling back to restart...${NC}"
+        if systemctl restart "$unit" 2>/dev/null; then
+            echo -e "  ${GREEN}[+] $unit restarted${NC}"
+        else
+            echo -e "  ${RED}[-] Failed — check: systemctl status $unit${NC}"
+        fi
+    fi
 }
 
 # =============================================================================
@@ -201,8 +251,22 @@ restore_apache2() {
     restore_dir_clean "$B/etc_apache2" /etc/apache2 "root:root"
     restore_dir_clean "$B/etc_httpd"   /etc/httpd   "root:root"
 
+    # Env / defaults
+    restore_file "$B/default_apache2" /etc/default/apache2 "root:root" "644"
+    restore_file "$B/sysconfig_httpd" /etc/sysconfig/httpd "root:root" "644"
+
     # Web root — MERGE (preserves any files not captured in backup)
     restore_dir_merge "$B/var_www" /var/www
+
+    # TLS material
+    restore_dir_clean "$B/letsencrypt"     /etc/letsencrypt
+    restore_dir_clean "$B/ssl_private"     /etc/ssl/private     "root:root"
+    restore_dir_clean "$B/pki_tls_private" /etc/pki/tls/private "root:root"
+    chmod 700 /etc/ssl/private     2>/dev/null
+    chmod 700 /etc/pki/tls/private 2>/dev/null
+
+    # Drop-ins
+    restore_dropins "$B/dropins"
 
     # Fix web root ownership (www-data on Debian, apache on RHEL)
     if getent group www-data &>/dev/null; then
@@ -230,9 +294,23 @@ restore_nginx() {
     # Config — CLEAN
     restore_dir_clean "$B/etc_nginx" /etc/nginx "root:root"
 
+    # Env / defaults
+    restore_file "$B/default_nginx"   /etc/default/nginx   "root:root" "644"
+    restore_file "$B/sysconfig_nginx" /etc/sysconfig/nginx "root:root" "644"
+
     # Web roots — MERGE
     restore_dir_merge "$B/var_www" /var/www
     restore_dir_merge "$B/html"    /usr/share/nginx/html
+
+    # TLS material
+    restore_dir_clean "$B/letsencrypt"     /etc/letsencrypt
+    restore_dir_clean "$B/ssl_private"     /etc/ssl/private     "root:root"
+    restore_dir_clean "$B/pki_tls_private" /etc/pki/tls/private "root:root"
+    chmod 700 /etc/ssl/private     2>/dev/null
+    chmod 700 /etc/pki/tls/private 2>/dev/null
+
+    # Drop-ins
+    restore_dropins "$B/dropins"
 
     # Fix ownership
     if getent group www-data &>/dev/null; then
@@ -263,13 +341,20 @@ restore_ssh() {
 
     # Lock down host key permissions (SSH refuses to start if these are too open)
     if [[ -d /etc/ssh ]]; then
-        chmod 600 /etc/ssh/*_key     2>/dev/null   # private keys: owner read-only
-        chmod 644 /etc/ssh/*_key.pub 2>/dev/null   # public keys:  world-readable
+        chmod 600 /etc/ssh/*_key       2>/dev/null
+        chmod 644 /etc/ssh/*_key.pub   2>/dev/null
         chmod 644 /etc/ssh/sshd_config 2>/dev/null
     fi
 
     # PAM config
     restore_file "$B/pam_sshd" /etc/pam.d/sshd "root:root" "644"
+
+    # Env / defaults
+    restore_file "$B/default_ssh"    /etc/default/ssh    "root:root" "644"
+    restore_file "$B/sysconfig_sshd" /etc/sysconfig/sshd "root:root" "644"
+
+    # Drop-ins
+    restore_dropins "$B/dropins"
 
     # Per-user .ssh directories (authorized_keys, known_hosts, etc.)
     if [[ -d "$B/user_ssh_dirs" ]]; then
@@ -277,7 +362,6 @@ restore_ssh() {
         for USER_SSH_BACKUP in "$B/user_ssh_dirs"/*; do
             [[ ! -d "$USER_SSH_BACKUP" ]] && continue
 
-            # Backup folder is named "<username>_ssh"
             FOLDER_NAME=$(basename "$USER_SSH_BACKUP")
             USERNAME="${FOLDER_NAME%_ssh}"
 
@@ -317,13 +401,20 @@ restore_vsftpd() {
 
     svc_stop "$UNIT"
 
-    # Configs — CLEAN
+    # Configs
     restore_file      "$B/vsftpd.conf"         /etc/vsftpd.conf        "root:root" "600"
     restore_dir_clean "$B/etc_vsftpd"          /etc/vsftpd             "root:root"
     restore_file      "$B/vsftpd.userlist"     /etc/vsftpd.userlist    "root:root" "644"
     restore_file      "$B/ftpusers"            /etc/ftpusers           "root:root" "644"
     restore_file      "$B/vsftpd.chroot_list"  /etc/vsftpd.chroot_list "root:root" "644"
     restore_file      "$B/pam_vsftpd"          /etc/pam.d/vsftpd       "root:root" "644"
+
+    # Env / defaults
+    restore_file      "$B/sysconfig_vsftpd"    /etc/sysconfig/vsftpd   "root:root" "644"
+    restore_file      "$B/default_vsftpd"      /etc/default/vsftpd     "root:root" "644"
+
+    # Drop-ins
+    restore_dropins   "$B/dropins"
 
     # FTP data — MERGE
     restore_dir_merge "$B/srv_ftp"  /srv/ftp  "ftp:ftp"
@@ -337,18 +428,26 @@ restore_vsftpd() {
 
 # =============================================================================
 # SAMBA / SMB
+#   Unit names: smbd/nmbd on Debian/Ubuntu, smb/nmb on RHEL/Rocky.
 # =============================================================================
 restore_smb() {
     echo -e "${YELLOW}[*] Restoring Samba (SMB)...${NC}"
     local B="$BACKUP_DIR/samba"
-    local UNIT
-    UNIT=$(detect_unit smbd)
+    local MAIN NETBIOS WINBIND
+    MAIN=$(detect_unit smbd smb)
+    NETBIOS=$(detect_unit nmbd nmb)
+    WINBIND=$(detect_unit winbind)
 
-    svc_stop nmbd 2>/dev/null
-    svc_stop "$UNIT"
+    svc_stop "$WINBIND"
+    svc_stop "$NETBIOS"
+    svc_stop "$MAIN"
 
     # Config — CLEAN
     restore_dir_clean "$B/etc_samba" /etc/samba "root:root"
+
+    # Env / defaults
+    restore_file "$B/default_samba"   /etc/default/samba   "root:root" "644"
+    restore_file "$B/sysconfig_samba" /etc/sysconfig/samba "root:root" "644"
 
     # Samba TDB databases (user accounts + secrets) — CLEAN
     restore_dir_clean "$B/var_lib_samba" /var/lib/samba
@@ -359,8 +458,12 @@ restore_smb() {
     restore_dir_merge "$B/srv_shares"  /srv/shares
     restore_dir_merge "$B/home_shares" /home/shares
 
-    svc_start "$UNIT"
-    svc_start nmbd 2>/dev/null
+    # Drop-ins
+    restore_dropins "$B/dropins"
+
+    svc_start "$MAIN"
+    svc_start "$NETBIOS"
+    svc_start "$WINBIND"
     echo -e "${GREEN}[+] Samba restore complete${NC}\n"
     echo "samba: restored" >> "$LOG"
 }
@@ -372,28 +475,40 @@ restore_dns() {
     echo -e "${YELLOW}[*] Restoring BIND DNS...${NC}"
     local B="$BACKUP_DIR/bind_dns"
     local UNIT
-    UNIT=$(detect_unit bind9 named)
+    UNIT=$(detect_unit bind9 named-chroot named)
 
     svc_stop "$UNIT"
 
-    # Config — Debian/Ubuntu — CLEAN
-    restore_dir_clean "$B/etc_bind" /etc/bind "bind:bind"
-
-    # Config — RHEL/CentOS — CLEAN
-    restore_file      "$B/named.conf" /etc/named.conf "root:named" "640"
-    restore_dir_clean "$B/etc_named"  /etc/named      "root:named"
-
-    # Zone data — Debian — CLEAN
+    # --- Debian/Ubuntu layout ---
+    restore_dir_clean "$B/etc_bind"       /etc/bind       "bind:bind"
     restore_dir_clean "$B/var_lib_bind"   /var/lib/bind   "bind:bind"
     restore_dir_clean "$B/var_cache_bind" /var/cache/bind "bind:bind"
+    restore_file      "$B/default_bind9"  /etc/default/bind9 "root:root" "644"
 
-    # Zone data — RHEL — CLEAN
-    restore_dir_clean "$B/var_named" /var/named
+    # --- RHEL/Rocky layout ---
+    restore_file      "$B/named.conf"            /etc/named.conf            "root:named" "640"
+    restore_file      "$B/named.rfc1912.zones"   /etc/named.rfc1912.zones   "root:named" "640"
+    restore_file      "$B/named.root.key"        /etc/named.root.key        "root:named" "640"
+    restore_file      "$B/named.iscdlv.key"      /etc/named.iscdlv.key      "root:named" "640"
+    restore_file      "$B/rndc.key"              /etc/rndc.key              "root:named" "640"
+    restore_file      "$B/rndc.conf"             /etc/rndc.conf             "root:named" "640"
+    restore_dir_clean "$B/etc_named"             /etc/named                 "root:named"
+    restore_dir_clean "$B/var_named"             /var/named
     chown -R named:named /var/named 2>/dev/null
 
+    # bind-chroot (Rocky optional)
+    restore_dir_clean "$B/var_named_chroot"      /var/named/chroot
+    [[ -d /var/named/chroot ]] && chown -R named:named /var/named/chroot 2>/dev/null
+
+    # Env / defaults
+    restore_file "$B/sysconfig_named" /etc/sysconfig/named "root:root" "644"
+
+    # Drop-ins
+    restore_dropins "$B/dropins"
+
     # BIND is fussy about directory permissions
-    chmod 755 /etc/bind      2>/dev/null
-    chmod 755 /var/lib/bind  2>/dev/null
+    chmod 755 /etc/bind     2>/dev/null
+    chmod 755 /var/lib/bind 2>/dev/null
 
     svc_start "$UNIT"
     echo -e "${GREEN}[+] BIND DNS restore complete${NC}\n"
@@ -403,9 +518,13 @@ restore_dns() {
 # =============================================================================
 # POSTGRESQL
 # Restore strategy (in order of preference):
-#   1. Individual per-database SQL dumps  (most reliable)
+#   1. Individual per-database SQL dumps  (most reliable, distro-agnostic)
 #   2. pg_dumpall SQL dump                (fallback)
 #   3. Raw data directory copy            (last resort if no SQL available)
+#
+# Path layout differs by distro:
+#   Ubuntu: config in /etc/postgresql, data in /var/lib/postgresql
+#   Rocky:  config + data both under /var/lib/pgsql/data
 # =============================================================================
 restore_postgres() {
     echo -e "${YELLOW}[*] Restoring PostgreSQL...${NC}"
@@ -414,8 +533,12 @@ restore_postgres() {
     UNIT=$(detect_unit postgresql postgresql@14-main postgresql@15-main postgresql@16-main)
     [[ -z "$UNIT" ]] && UNIT="postgresql"
 
-    # Restore config first
-    restore_dir_clean "$B/etc_postgresql" /etc/postgresql "postgres:postgres"
+    # Restore config files first (whichever distro this is)
+    restore_dir_clean "$B/etc_postgresql"     /etc/postgresql     "postgres:postgres"
+    restore_dir_clean "$B/sysconfig_pgsql"    /etc/sysconfig/pgsql "root:root"
+
+    # Drop-ins
+    restore_dropins "$B/dropins"
 
     # Ensure PostgreSQL is running so we can run SQL commands
     echo -e "  ${YELLOW}[*] Ensuring PostgreSQL is running...${NC}"
@@ -427,13 +550,31 @@ restore_postgres() {
         echo -e "  ${RED}[!] Cannot connect to PostgreSQL — falling back to raw data directory restore${NC}"
         svc_stop "$UNIT"
 
-        restore_dir_clean "$B/var_lib_postgresql" /var/lib/postgresql
-        chown -R postgres:postgres /var/lib/postgresql 2>/dev/null
+        # Try whichever data dir is in the backup
+        if [[ -d "$B/var_lib_postgresql" ]]; then
+            restore_dir_clean "$B/var_lib_postgresql" /var/lib/postgresql
+            chown -R postgres:postgres /var/lib/postgresql 2>/dev/null
+        fi
+        if [[ -d "$B/var_lib_pgsql" ]]; then
+            restore_dir_clean "$B/var_lib_pgsql" /var/lib/pgsql
+            chown -R postgres:postgres /var/lib/pgsql 2>/dev/null
+        fi
 
         svc_start "$UNIT"
         echo -e "${GREEN}[+] PostgreSQL restore complete (data dir fallback)${NC}\n"
         echo "postgres: restored (data dir fallback)" >> "$LOG"
         return
+    fi
+
+    # Restore roles first (passwords, memberships) so per-DB owners exist
+    if compgen -G "$B/pg_roles_*.sql" > /dev/null; then
+        local ROLES_FILE
+        ROLES_FILE=$(ls "$B"/pg_roles_*.sql | head -1)
+        echo -e "  ${YELLOW}[*] Restoring roles from $(basename "$ROLES_FILE")${NC}"
+        sudo -u postgres psql -f "$ROLES_FILE" postgres &>/dev/null \
+            && echo -e "  ${GREEN}[+] Roles restored${NC}" \
+            || echo -e "  ${YELLOW}[~] Some role statements failed (often: role already exists)${NC}"
+        echo "  PG: roles restored from $ROLES_FILE" >> "$LOG"
     fi
 
     # --- Restore from individual database SQL dumps (preferred) ---
@@ -445,7 +586,6 @@ restore_postgres() {
         for SQL_FILE in "$DB_DIR"/*.sql; do
             [[ ! -f "$SQL_FILE" ]] && continue
 
-            # Filename format: <dbname>_YYYYMMDD_HHMMSS.sql — strip the timestamp suffix
             FILENAME=$(basename "$SQL_FILE")
             DBNAME=$(echo "$FILENAME" | sed 's/_[0-9]\{8\}_[0-9]\{6\}\.sql$//')
 
@@ -457,14 +597,18 @@ restore_postgres() {
                  WHERE datname = '$DBNAME' AND pid <> pg_backend_pid();" &>/dev/null
 
             # Drop and recreate clean
-            sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"$DBNAME\";"   &>/dev/null
-            sudo -u postgres psql -c "CREATE DATABASE \"$DBNAME\";"           2>/dev/null \
-                || { echo -e "     ${RED}✗ Could not create database $DBNAME${NC}"; continue; }
+            sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"$DBNAME\";" &>/dev/null
+            if ! sudo -u postgres psql -c "CREATE DATABASE \"$DBNAME\";" 2>/dev/null; then
+                echo -e "     ${RED}✗ Could not create database $DBNAME${NC}"
+                continue
+            fi
 
             # Restore data
-            sudo -u postgres psql -d "$DBNAME" -f "$SQL_FILE" &>/dev/null \
-                && echo -e "     ${GREEN}✓ $DBNAME restored${NC}" \
-                || echo -e "     ${RED}✗ $DBNAME restore had errors — verify manually${NC}"
+            if sudo -u postgres psql -d "$DBNAME" -f "$SQL_FILE" &>/dev/null; then
+                echo -e "     ${GREEN}✓ $DBNAME restored${NC}"
+            else
+                echo -e "     ${RED}✗ $DBNAME restore had errors — verify manually${NC}"
+            fi
 
             echo "  PG DB: $DBNAME restored from $SQL_FILE" >> "$LOG"
         done
@@ -473,11 +617,10 @@ restore_postgres() {
     elif compgen -G "$B/pg_dumpall_*.sql" > /dev/null; then
         local DUMPFILE
         DUMPFILE=$(ls "$B"/pg_dumpall_*.sql | head -1)
-        echo -e "  ${YELLOW}[*] Restoring from pg_dumpall: $(basename $DUMPFILE)${NC}"
+        echo -e "  ${YELLOW}[*] Restoring from pg_dumpall: $(basename "$DUMPFILE")${NC}"
         echo -e "  ${CYAN}[!] Note: 'already exists' errors are normal if databases weren't dropped first${NC}"
 
-        sudo -u postgres psql -f "$DUMPFILE" postgres 2>&1 | grep -v "^$" | grep -i "error\|warning\|fatal" \
-            || true
+        sudo -u postgres psql -f "$DUMPFILE" postgres &>/dev/null || true
         echo -e "  ${GREEN}[+] pg_dumpall restore complete${NC}"
         echo "  PG: pg_dumpall restore from $DUMPFILE" >> "$LOG"
 
@@ -485,8 +628,14 @@ restore_postgres() {
         echo -e "  ${RED}[!] No SQL dumps found — attempting raw data directory restore${NC}"
         svc_stop "$UNIT"
 
-        restore_dir_clean "$B/var_lib_postgresql" /var/lib/postgresql
-        chown -R postgres:postgres /var/lib/postgresql 2>/dev/null
+        if [[ -d "$B/var_lib_postgresql" ]]; then
+            restore_dir_clean "$B/var_lib_postgresql" /var/lib/postgresql
+            chown -R postgres:postgres /var/lib/postgresql 2>/dev/null
+        fi
+        if [[ -d "$B/var_lib_pgsql" ]]; then
+            restore_dir_clean "$B/var_lib_pgsql" /var/lib/pgsql
+            chown -R postgres:postgres /var/lib/pgsql 2>/dev/null
+        fi
 
         svc_start "$UNIT"
         echo "postgres: restored (data dir, no SQL found)" >> "$LOG"
@@ -523,5 +672,7 @@ echo -e "${YELLOW}Tip: check service health with:${NC}"
 echo -e "  systemctl status apache2 nginx ssh vsftpd smbd bind9 postgresql"
 echo ""
 
-echo ""                            >> "$LOG"
-echo "Restore finished: $(date)"  >> "$LOG"
+{
+    echo ""
+    echo "Restore finished: $(date)"
+} >> "$LOG"
