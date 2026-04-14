@@ -191,6 +191,52 @@ restore_dropins() {
     return 0
 }
 
+# Restore vendor systemd unit files from backup's units/ subdir.
+# Writes to /usr/lib/systemd/system (on Ubuntu /lib is a symlink to /usr/lib,
+# so this works on both distros). Triggers daemon-reload if anything copied.
+restore_units() {
+    local unitsdir="$1"
+    [[ -d "$unitsdir" ]] || return 0
+    local target="/usr/lib/systemd/system"
+    [[ -d "$target" ]] || target="/lib/systemd/system"
+    [[ -d "$target" ]] || { mkdir -p "$target" 2>/dev/null || return 0; }
+    local copied=0
+    for unit_file in "$unitsdir"/*; do
+        [[ -f "$unit_file" ]] || continue
+        local name
+        name=$(basename "$unit_file")
+        echo -e "  ${GREEN}[+]${NC} unit: $target/$name"
+        if cp -p "$unit_file" "$target/$name" 2>/dev/null; then
+            chmod 644 "$target/$name" 2>/dev/null
+            copied=1
+        fi
+        echo "  RESTORE UNIT: $unit_file -> $target/$name" >> "$LOG"
+    done
+    (( copied )) && systemctl daemon-reload 2>/dev/null
+    return 0
+}
+
+# Restore SysV init scripts from backup's initd/ subdir into /etc/init.d/.
+# Some Ubuntu services (ssh, apache2, samba) ship LSB wrappers there.
+restore_initd() {
+    local initdir="$1"
+    [[ -d "$initdir" ]] || return 0
+    mkdir -p /etc/init.d 2>/dev/null
+    local copied=0
+    for f in "$initdir"/*; do
+        [[ -f "$f" ]] || continue
+        local name
+        name=$(basename "$f")
+        echo -e "  ${GREEN}[+]${NC} init.d: /etc/init.d/$name"
+        cp -p "$f" "/etc/init.d/$name" 2>/dev/null && copied=1
+        chmod 755 "/etc/init.d/$name" 2>/dev/null
+        echo "  RESTORE INITD: $f -> /etc/init.d/$name" >> "$LOG"
+    done
+    # systemd-sysv-generator only synthesizes wrappers at daemon-reload time
+    (( copied )) && systemctl daemon-reload 2>/dev/null
+    return 0
+}
+
 # Detect the active systemd unit name for a service (handles distro naming differences).
 detect_unit() {
     for name in "$@"; do
@@ -208,9 +254,13 @@ svc_stop() {
     systemctl stop "$unit" 2>/dev/null || true
 }
 
+# Unmask before starting — tables.sh (or any prior hardening) may have masked
+# the unit by creating /etc/systemd/system/<unit> -> /dev/null, which silently
+# overrides the vendor unit we just restored. unmask removes that symlink.
 svc_start() {
     local unit="$1"
     [[ -z "$unit" ]] && return
+    systemctl unmask "$unit" 2>/dev/null
     echo -e "  ${YELLOW}[*] Starting $unit...${NC}"
     if systemctl start "$unit" 2>/dev/null; then
         echo -e "  ${GREEN}[+] $unit started${NC}"
@@ -223,6 +273,7 @@ svc_start() {
 svc_reload() {
     local unit="$1"
     [[ -z "$unit" ]] && return
+    systemctl unmask "$unit" 2>/dev/null
     echo -e "  ${YELLOW}[*] Reloading $unit config...${NC}"
     if systemctl reload "$unit" 2>/dev/null; then
         echo -e "  ${GREEN}[+] $unit reloaded${NC}"
@@ -265,8 +316,13 @@ restore_apache2() {
     chmod 700 /etc/ssl/private     2>/dev/null
     chmod 700 /etc/pki/tls/private 2>/dev/null
 
-    # Drop-ins
+    # Unit files + drop-ins + init.d (BEFORE svc_start)
+    restore_units   "$B/units"
     restore_dropins "$B/dropins"
+    restore_initd   "$B/initd"
+
+    # If we just restored the unit, detect_unit may now succeed where it didn't
+    [[ -z "$UNIT" ]] && UNIT=$(detect_unit apache2 httpd)
 
     # Fix web root ownership (www-data on Debian, apache on RHEL)
     if getent group www-data &>/dev/null; then
@@ -309,8 +365,12 @@ restore_nginx() {
     chmod 700 /etc/ssl/private     2>/dev/null
     chmod 700 /etc/pki/tls/private 2>/dev/null
 
-    # Drop-ins
+    # Unit files + drop-ins + init.d (BEFORE svc_start)
+    restore_units   "$B/units"
     restore_dropins "$B/dropins"
+    restore_initd   "$B/initd"
+
+    [[ -z "$UNIT" ]] && UNIT=$(detect_unit nginx)
 
     # Fix ownership
     if getent group www-data &>/dev/null; then
@@ -353,8 +413,12 @@ restore_ssh() {
     restore_file "$B/default_ssh"    /etc/default/ssh    "root:root" "644"
     restore_file "$B/sysconfig_sshd" /etc/sysconfig/sshd "root:root" "644"
 
-    # Drop-ins
+    # Unit files + drop-ins + init.d (BEFORE svc_reload)
+    restore_units   "$B/units"
     restore_dropins "$B/dropins"
+    restore_initd   "$B/initd"
+
+    [[ -z "$UNIT" ]] && UNIT=$(detect_unit ssh sshd)
 
     # Per-user .ssh directories (authorized_keys, known_hosts, etc.)
     if [[ -d "$B/user_ssh_dirs" ]]; then
@@ -383,6 +447,10 @@ restore_ssh() {
             chmod 600 "$HOME_DIR/.ssh/authorized_keys"          2>/dev/null
         done
     fi
+
+    # Unmask socket units too — tables.sh masks both the service AND the socket.
+    # svc_reload only handles the .service unit, so sockets need explicit unmask.
+    systemctl unmask ssh.socket sshd.socket 2>/dev/null
 
     # Reload (not restart) so your session stays alive
     svc_reload "$UNIT"
@@ -413,8 +481,12 @@ restore_vsftpd() {
     restore_file      "$B/sysconfig_vsftpd"    /etc/sysconfig/vsftpd   "root:root" "644"
     restore_file      "$B/default_vsftpd"      /etc/default/vsftpd     "root:root" "644"
 
-    # Drop-ins
+    # Unit files + drop-ins + init.d (BEFORE svc_start)
+    restore_units     "$B/units"
     restore_dropins   "$B/dropins"
+    restore_initd     "$B/initd"
+
+    [[ -z "$UNIT" ]] && UNIT=$(detect_unit vsftpd)
 
     # FTP data — MERGE
     restore_dir_merge "$B/srv_ftp"  /srv/ftp  "ftp:ftp"
@@ -458,8 +530,14 @@ restore_smb() {
     restore_dir_merge "$B/srv_shares"  /srv/shares
     restore_dir_merge "$B/home_shares" /home/shares
 
-    # Drop-ins
+    # Unit files + drop-ins + init.d (BEFORE svc_start)
+    restore_units   "$B/units"
     restore_dropins "$B/dropins"
+    restore_initd   "$B/initd"
+
+    [[ -z "$MAIN" ]]    && MAIN=$(detect_unit smbd smb)
+    [[ -z "$NETBIOS" ]] && NETBIOS=$(detect_unit nmbd nmb)
+    [[ -z "$WINBIND" ]] && WINBIND=$(detect_unit winbind)
 
     svc_start "$MAIN"
     svc_start "$NETBIOS"
@@ -503,8 +581,12 @@ restore_dns() {
     # Env / defaults
     restore_file "$B/sysconfig_named" /etc/sysconfig/named "root:root" "644"
 
-    # Drop-ins
+    # Unit files + drop-ins + init.d (BEFORE svc_start)
+    restore_units   "$B/units"
     restore_dropins "$B/dropins"
+    restore_initd   "$B/initd"
+
+    [[ -z "$UNIT" ]] && UNIT=$(detect_unit bind9 named-chroot named)
 
     # BIND is fussy about directory permissions
     chmod 755 /etc/bind     2>/dev/null
@@ -537,12 +619,18 @@ restore_postgres() {
     restore_dir_clean "$B/etc_postgresql"     /etc/postgresql     "postgres:postgres"
     restore_dir_clean "$B/sysconfig_pgsql"    /etc/sysconfig/pgsql "root:root"
 
-    # Drop-ins
+    # Unit files + drop-ins + init.d
+    restore_units   "$B/units"
     restore_dropins "$B/dropins"
+    restore_initd   "$B/initd"
+
+    [[ -z "$UNIT" ]] && UNIT=$(detect_unit postgresql postgresql@14-main postgresql@15-main postgresql@16-main)
+    [[ -z "$UNIT" ]] && UNIT="postgresql"
 
     # Ensure PostgreSQL is running so we can run SQL commands
     echo -e "  ${YELLOW}[*] Ensuring PostgreSQL is running...${NC}"
-    systemctl start "$UNIT" 2>/dev/null
+    systemctl unmask "$UNIT" 2>/dev/null
+    systemctl start  "$UNIT" 2>/dev/null
     sleep 2
 
     # Check if we can connect

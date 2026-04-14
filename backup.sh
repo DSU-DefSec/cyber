@@ -110,6 +110,23 @@ backup_unit() {
 }
 
 # =============================================================================
+# Helper: copy SysV init scripts from /etc/init.d/<name>
+# Some Ubuntu services still ship LSB compat wrappers there.
+# =============================================================================
+backup_initd() {
+    local outdir="$1"; shift
+    mkdir -p "$outdir"
+    for name in "$@"; do
+        local p="/etc/init.d/$name"
+        if [[ -f "$p" ]]; then
+            cp -p "$p" "$outdir/$name" 2>/dev/null \
+                && echo -e "  ${GREEN}[+]${NC} $p"
+            echo "  INITD: $p -> $outdir/$name" >> "$MANIFEST"
+        fi
+    done
+}
+
+# =============================================================================
 # Helper: copy /etc/systemd/system/<unit>.service.d/ drop-in dirs
 # =============================================================================
 backup_dropins() {
@@ -153,10 +170,11 @@ backup_apache2() {
     safe_copy_dir  /etc/ssl/private     "$D/ssl_private"       # Ubuntu
     safe_copy_dir  /etc/pki/tls/private "$D/pki_tls_private"   # Rocky
 
-    # Unit files + drop-ins
+    # Unit files + drop-ins + init.d
     backup_unit    apache2.service      "$D/units"
     backup_unit    httpd.service        "$D/units"
     backup_dropins "$D/dropins" apache2 httpd
+    backup_initd   "$D/initd"   apache2 httpd
 
     echo -e "${GREEN}[+] Apache2 done${NC}\n"
     echo "apache2: complete" >> "$MANIFEST"
@@ -189,9 +207,10 @@ backup_nginx() {
     safe_copy_dir  /etc/ssl/private        "$D/ssl_private"
     safe_copy_dir  /etc/pki/tls/private    "$D/pki_tls_private"
 
-    # Unit files + drop-ins
+    # Unit files + drop-ins + init.d
     backup_unit    nginx.service           "$D/units"
     backup_dropins "$D/dropins" nginx
+    backup_initd   "$D/initd"   nginx
 
     echo -e "${GREEN}[+] Nginx done${NC}\n"
     echo "nginx: complete" >> "$MANIFEST"
@@ -227,12 +246,13 @@ backup_ssh() {
         fi
     done
 
-    # Unit files (service + socket on both distros) + drop-ins
+    # Unit files (service + socket on both distros) + drop-ins + init.d
     backup_unit    ssh.service       "$D/units"
     backup_unit    ssh.socket        "$D/units"
     backup_unit    sshd.service      "$D/units"
     backup_unit    sshd.socket       "$D/units"
     backup_dropins "$D/dropins" ssh ssh@ sshd sshd@
+    backup_initd   "$D/initd"   ssh sshd
 
     echo -e "${GREEN}[+] OpenSSH done${NC}\n"
     echo "ssh: complete" >> "$MANIFEST"
@@ -265,9 +285,10 @@ backup_vsftpd() {
     safe_copy_file /etc/sysconfig/vsftpd     "$D/sysconfig_vsftpd"   # Rocky
     safe_copy_file /etc/default/vsftpd       "$D/default_vsftpd"     # Ubuntu (rare)
 
-    # Unit file + drop-ins
+    # Unit file + drop-ins + init.d
     backup_unit    vsftpd.service            "$D/units"
     backup_dropins "$D/dropins" vsftpd
+    backup_initd   "$D/initd"   vsftpd
 
     echo -e "${GREEN}[+] vsftpd done${NC}\n"
     echo "vsftpd: complete" >> "$MANIFEST"
@@ -300,13 +321,14 @@ backup_smb() {
     # Logs
     safe_copy_dir  /var/log/samba        "$D/log_samba"
 
-    # Unit files (both Ubuntu and Rocky names) + drop-ins
+    # Unit files (both Ubuntu and Rocky names) + drop-ins + init.d
     backup_unit    smbd.service          "$D/units"   # Ubuntu
     backup_unit    nmbd.service          "$D/units"   # Ubuntu
     backup_unit    smb.service           "$D/units"   # Rocky
     backup_unit    nmb.service           "$D/units"   # Rocky
     backup_unit    winbind.service       "$D/units"   # AD members
     backup_dropins "$D/dropins" smbd nmbd smb nmb winbind
+    backup_initd   "$D/initd"   smbd nmbd samba samba-ad-dc winbind
 
     echo -e "${GREEN}[+] Samba done${NC}\n"
     echo "samba: complete" >> "$MANIFEST"
@@ -342,11 +364,12 @@ backup_dns() {
     # Logs
     safe_copy_dir  /var/log/named        "$D/log_named"
 
-    # Unit files + drop-ins
+    # Unit files + drop-ins + init.d
     backup_unit    bind9.service         "$D/units"   # Ubuntu
     backup_unit    named.service         "$D/units"   # Rocky
     backup_unit    named-chroot.service  "$D/units"   # Rocky w/ bind-chroot
     backup_dropins "$D/dropins" bind9 named named-chroot
+    backup_initd   "$D/initd"   bind9 named
 
     echo -e "${GREEN}[+] BIND DNS done${NC}\n"
     echo "dns: complete" >> "$MANIFEST"
@@ -397,9 +420,11 @@ backup_postgres() {
         echo -e "  ${YELLOW}[~] 'postgres' system user not found — skipping pg_dump${NC}"
     fi
 
-    # Unit files + drop-ins
+    # Unit files + drop-ins + init.d
     backup_unit    postgresql.service    "$D/units"
+    backup_unit    postgresql@.service   "$D/units"
     backup_dropins "$D/dropins" postgresql
+    backup_initd   "$D/initd"   postgresql
 
     echo -e "${GREEN}[+] PostgreSQL done${NC}\n"
     echo "postgres: complete" >> "$MANIFEST"
