@@ -1,5 +1,4 @@
 #!/bin/bash
-# firewall deploy + remote access lockdown
 set -e
 
 (( EUID == 0 )) || { echo "must run as root"; exit 1; }
@@ -7,8 +6,8 @@ set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NFT="$HERE/nft"
 
-[[ -x $NFT ]] || { echo "no nft binary at $NFT"; exit 1; }
-"$NFT" list ruleset &>/dev/null || { echo "nft broken (nf_tables kernel support?)"; exit 1; }
+[[ -x $NFT ]] || { echo "no nft at $NFT"; exit 1; }
+"$NFT" list ruleset &>/dev/null || { echo "nft not working"; exit 1; }
 
 IU=() IT=() OU=() OT=()
 while (( $# )); do
@@ -22,9 +21,11 @@ while (( $# )); do
 done
 
 csv() { local IFS=,; echo "$*"; }
-allow() { (( $# > 2 )) && echo "        $1 dport { $(csv "${@:3}") } accept"; }
+allow() { (( $# > 1 )) && echo "        $1 dport { $(csv "${@:2}") } accept"; }
 
-RULES=$(mktemp); trap 'rm -f "$RULES"' EXIT
+RULES=$(mktemp)
+trap 'rm -f "$RULES"' EXIT
+
 {
     echo 'flush ruleset'
     echo 'table inet fw {'
@@ -32,22 +33,20 @@ RULES=$(mktemp); trap 'rm -f "$RULES"' EXIT
     echo '        type filter hook input priority 0; policy drop;'
     echo '        iif lo accept'
     echo '        ct state established,related accept'
-    allow udp in "${IU[@]}"
-    allow tcp in "${IT[@]}"
+    allow udp "${IU[@]}"
+    allow tcp "${IT[@]}"
     echo '    }'
     echo '    chain forward { type filter hook forward priority 0; policy drop; }'
     echo '    chain output {'
     echo '        type filter hook output priority 0; policy drop;'
     echo '        oif lo accept'
     echo '        ct state established,related accept'
-    allow udp out "${OU[@]}"
-    allow tcp out "${OT[@]}"
+    allow udp "${OU[@]}"
+    allow tcp "${OT[@]}"
     echo '    }'
     echo '}'
 } > "$RULES"
 
-# shove aside any other firewall manager so it can't re-assert rules
-# on top of ours (firewalld on rocky, ufw/nftables.service elsewhere)
 for svc in firewalld ufw nftables iptables ip6tables; do
     systemctl stop    "$svc" 2>/dev/null || true
     systemctl disable "$svc" 2>/dev/null || true
@@ -56,12 +55,10 @@ done
 
 "$NFT" -f "$RULES"
 
-# persist + lock
 chattr -i /etc/nftables.rules 2>/dev/null || true
 "$NFT" list ruleset > /etc/nftables.rules
 chattr +i /etc/nftables.rules
 
-# reload on boot
 install -m 755 "$NFT" /usr/local/sbin/nft-static
 cat >/etc/systemd/system/fw-static.service <<EOF
 [Unit]
@@ -79,30 +76,21 @@ EOF
 systemctl daemon-reload || true
 systemctl enable fw-static.service &>/dev/null || true
 
-# kill sshd if ssh isn't scored
 if [[ ! " ${IT[*]} " =~ " 22 " ]]; then
     systemctl stop sshd 2>/dev/null || true
-    systemctl disable sshd 2>/dev/null || true
     systemctl mask sshd 2>/dev/null || true
-    sshd_bin=$(command -v sshd || true)
-    [[ -n $sshd_bin ]] && { chmod 000 "$sshd_bin"; chattr +i "$sshd_bin"; }
-    chattr +i /etc/ssh/sshd_config 2>/dev/null || true
 fi
 
-# telnet
-systemctl stop telnet.socket 2>/dev/null || true
+systemctl stop    telnet.socket 2>/dev/null || true
 systemctl disable telnet.socket 2>/dev/null || true
-systemctl mask telnet.socket 2>/dev/null || true
+systemctl mask    telnet.socket 2>/dev/null || true
 
-# nuke the usual RAT toolkit
 for b in telnet nc ncat netcat nmap socat; do
     p=$(command -v "$b" 2>/dev/null) || continue
     chmod 000 "$p" 2>/dev/null || true
     chattr +i "$p" 2>/dev/null || true
 done
 
-# active connection audit — any shell/remote-access tool still holding
-# a socket is almost certainly not ours
 command -v ss >/dev/null || exit 0
 
 BAD='^(nc|ncat|netcat|socat|telnet|telnetd|ssh|sshd|bash|sh|dash|zsh|ksh|python|python2|python3|perl|ruby|php|lua|node|powershell|pwsh)$'
@@ -115,7 +103,7 @@ printf '%-6s %-8s %-22s %-22s %s\n' PID USER LOCAL PEER CMD
 while read -r _ _ lo peer proc; do
     [[ -z $proc ]] && continue
     name=${proc#*users:((\"}; name=${name%%\"*}
-    pid=${proc##*pid=}; pid=${pid%%,*}; pid=${pid%%)*}
+    pid=${proc##*pid=};      pid=${pid%%,*}; pid=${pid%%)*}
     [[ $name =~ $BAD ]] || continue
     cmd=$(ps -o args= -p "$pid" 2>/dev/null | cut -c1-50)
     user=$(ps -o user= -p "$pid" 2>/dev/null)
@@ -123,4 +111,8 @@ while read -r _ _ lo peer proc; do
     n=$((n+1))
 done < <(ss -Htnp state established state listening 2>/dev/null)
 
-(( n )) && printf '\n%d socket(s) — kill with: kill -9 <pid>\n' "$n" || echo "  none"
+if (( n )); then
+    printf '\n%d socket(s) — kill with: kill -9 <pid>\n' "$n"
+else
+    echo "  none"
+fi
