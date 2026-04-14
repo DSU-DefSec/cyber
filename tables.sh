@@ -80,8 +80,14 @@ systemctl daemon-reload || true
 systemctl enable fw-static.service &>/dev/null || true
 
 if [[ ! " ${IT[*]} " =~ " 22 " ]]; then
-    systemctl stop sshd 2>/dev/null || true
-    systemctl mask sshd 2>/dev/null || true
+    case $(. /etc/os-release 2>/dev/null; echo "${ID_LIKE:-$ID}") in
+        *debian*|*ubuntu*) ssh_units=(ssh ssh.socket) ;;
+        *)                 ssh_units=(sshd sshd.socket) ;;
+    esac
+    for u in "${ssh_units[@]}"; do
+        systemctl stop "$u" 2>/dev/null || true
+        systemctl mask "$u" 2>/dev/null || true
+    done
 fi
 
 systemctl stop    telnet.socket 2>/dev/null || true
@@ -91,7 +97,6 @@ systemctl mask    telnet.socket 2>/dev/null || true
 for b in telnet nc ncat netcat nmap socat; do
     p=$(command -v "$b" 2>/dev/null) || continue
     chmod 000 "$p" 2>/dev/null || true
-    chattr +i "$p" 2>/dev/null || true
 done
 
 command -v ss >/dev/null || exit 0
