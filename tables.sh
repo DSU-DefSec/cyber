@@ -21,7 +21,10 @@ while (( $# )); do
 done
 
 csv() { local IFS=,; echo "$*"; }
-allow() { (( $# > 1 )) && echo "        $1 dport { $(csv "${@:2}") } accept"; }
+allow() {
+    (( $# > 1 )) || return 0
+    echo "        $1 dport { $(csv "${@:2}") } accept"
+}
 
 RULES=$(mktemp)
 trap 'rm -f "$RULES"' EXIT
