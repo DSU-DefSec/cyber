@@ -1,76 +1,180 @@
-#!/bin/bash
-# backup.sh — full /etc snapshot + per-service data dirs (Ubuntu 24.04 / Rocky 9)
-# Usage: sudo ./backup.sh [destination-dir]   (default: /opt)
+#!/usr/bin/env bash
+# backup_fixed.sh
+# Safer system backup for Ubuntu 24.04 / Rocky 9 style hosts.
+#
+# Default behavior:
+#   - writes to /var/backups/system-snapshots, not /
+#   - creates a timestamped tar.gz plus sha256
+#   - stores useful metadata for auditing and restore planning
+#   - does NOT hide all tar errors
+#
+# Usage:
+#   sudo ./backup_fixed.sh
+#   sudo ./backup_fixed.sh /path/to/backup-dir
 
-set -e
-(( EUID == 0 )) || { echo "must run as root"; exit 1; }
+set -Eeuo pipefail
+umask 077
 
-DEST="${1:-/opt}"
-mkdir -p "$DEST"
-[[ -d $DEST ]] || { echo "not a directory: $DEST"; exit 1; }
+log() { printf '[backup] %s\n' "$*"; }
+die() { printf '[backup] ERROR: %s\n' "$*" >&2; exit 1; }
 
-STAMP=$(date +%Y%m%d_%H%M%S)
-WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
-OUT="$DEST/backup_$(hostname)_${STAMP}.tar.gz"
+require_root() {
+  (( EUID == 0 )) || die 'must run as root'
+}
 
-# /etc in full + service data trees + unit files + TLS + user ssh dirs.
-# Safe superset of Ubuntu 24.04 and Rocky 9 paths — nonexistent entries are skipped.
-PATHS=(
+is_systemd_active() {
+  command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1 || command -v systemctl >/dev/null 2>&1
+}
+
+postgres_is_running() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl is-active --quiet postgresql 2>/dev/null || \
+  systemctl is-active --quiet postgresql.service 2>/dev/null
+}
+
+collect_paths() {
+  local -a raw_paths=(
     /etc
     /usr/lib/systemd/system
-    # apache / web
+    /etc/systemd/system
     /var/www
-    # ftp
-    /srv/ftp /var/ftp
-    # samba
+    /srv/ftp
+    /var/ftp
     /var/lib/samba
-    # dns
-    /var/named /var/lib/bind
-    # postgres
-    /var/lib/postgresql /var/lib/pgsql
-    # tls
+    /var/named
+    /var/lib/bind
+    /var/lib/postgresql
+    /var/lib/pgsql
     /etc/pki
-    # root ssh
     /root/.ssh
-)
+  )
 
-KEEP=()
-for p in "${PATHS[@]}"; do
-    [[ -e $p ]] && KEEP+=("$p")
-done
+  KEEP=()
+  local p
+  for p in "${raw_paths[@]}"; do
+    [[ -e "$p" ]] && KEEP+=("$p")
+  done
 
-# Per-user .ssh dirs (UIDs >=1000)
-while IFS=: read -r user _ uid _ _ home _; do
+  # Add per-user ssh directories for "real" users.
+  while IFS=: read -r user _ uid _ _ home shell; do
+    [[ "$uid" =~ ^[0-9]+$ ]] || continue
     (( uid >= 1000 )) || continue
-    [[ -d $home/.ssh ]] && KEEP+=("$home/.ssh")
-done </etc/passwd
+    [[ -d "$home/.ssh" ]] || continue
+    KEEP+=("$home/.ssh")
+  done < /etc/passwd
+}
 
-# Manifest so restore knows what's in here
-MANIFEST="$WORK/MANIFEST"
-{ echo "# backup $(date -Iseconds) on $(hostname)"; printf '%s\n' "${KEEP[@]}"; } >"$MANIFEST"
+write_metadata() {
+  local meta_dir="$1"
+  mkdir -p "$meta_dir"
 
-# Postgres logical dump — survives datadir corruption / version mismatch
-if command -v pg_dumpall &>/dev/null && systemctl is-active postgresql &>/dev/null; then
-    sudo -u postgres pg_dumpall 2>/dev/null >"$WORK/pg_dumpall.sql" && \
-        echo "wrote pg_dumpall.sql ($(du -h "$WORK/pg_dumpall.sql" | cut -f1))"
-fi
+  {
+    echo "created_at=$(date -Iseconds)"
+    echo "hostname=$(hostname -f 2>/dev/null || hostname)"
+    echo "kernel=$(uname -srmo 2>/dev/null || uname -a)"
+    echo "backup_destination=$DEST"
+    echo "archive_name=$(basename "$OUT")"
+  } > "$meta_dir/backup.env"
 
-# Installed package list for reprovisioning
-if command -v dpkg &>/dev/null; then
-    dpkg --get-selections 2>/dev/null >"$WORK/packages.dpkg" || true
-elif command -v rpm &>/dev/null; then
-    rpm -qa 2>/dev/null >"$WORK/packages.rpm" || true
-fi
+  if [[ -f /etc/os-release ]]; then
+    cp /etc/os-release "$meta_dir/os-release"
+  fi
 
-systemctl list-unit-files --state=enabled 2>/dev/null >"$WORK/enabled.units" || true
+  if command -v dpkg >/dev/null 2>&1; then
+    dpkg --get-selections > "$meta_dir/packages.dpkg" || true
+  elif command -v rpm >/dev/null 2>&1; then
+    rpm -qa > "$meta_dir/packages.rpm" || true
+  fi
 
-EXTRAS=()
-for f in MANIFEST pg_dumpall.sql packages.dpkg packages.rpm enabled.units; do
-    [[ -f "$WORK/$f" ]] && EXTRAS+=("$f")
-done
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl list-unit-files --state=enabled > "$meta_dir/enabled.units" 2>/dev/null || true
+  fi
 
-tar -czpf "$OUT" --xattrs --acls \
-    -C "$WORK" "${EXTRAS[@]}" \
-    "${KEEP[@]}" 2>/dev/null
+  mount > "$meta_dir/mounts.txt" 2>/dev/null || true
+  df -h > "$meta_dir/disk-usage.txt" 2>/dev/null || true
 
-echo "wrote $OUT ($(du -h "$OUT" | cut -f1)) — ${#KEEP[@]} paths"
+  {
+    echo "# included paths"
+    printf '%s\n' "${KEEP[@]}"
+  } > "$meta_dir/MANIFEST"
+
+  if command -v pg_dumpall >/dev/null 2>&1 && postgres_is_running; then
+    if sudo -u postgres pg_dumpall > "$meta_dir/pg_dumpall.sql" 2> "$meta_dir/pg_dumpall.stderr"; then
+      log "postgres logical dump created"
+      rm -f "$meta_dir/pg_dumpall.stderr"
+    else
+      log "postgres logical dump failed, see metadata/pg_dumpall.stderr"
+    fi
+  fi
+}
+
+create_archive() {
+  local meta_root="$1"
+  local tar_err="$2"
+  local -a tar_args=(
+    --create
+    --gzip
+    --file "$OUT"
+    --preserve-permissions
+    --acls
+    --xattrs
+    --numeric-owner
+    --warning=no-file-ignored
+    --directory /
+  )
+
+  local -a relative_keep=()
+  local item
+  for item in "${KEEP[@]}"; do
+    relative_keep+=("${item#/}")
+  done
+
+  # metadata goes in as relative content from the temporary workdir
+  tar "${tar_args[@]}" \
+    --transform 's,^,metadata/,' \
+    --directory "$meta_root" . \
+    --directory / "${relative_keep[@]}" \
+    2> "$tar_err"
+}
+
+main() {
+  require_root
+
+  DEST="${1:-/var/backups/system-snapshots}"
+  [[ -n "$DEST" ]] || die 'destination cannot be empty'
+
+  mkdir -p "$DEST"
+  [[ -d "$DEST" ]] || die "not a directory: $DEST"
+  [[ -w "$DEST" ]] || die "destination not writable: $DEST"
+
+  DEST="$(readlink -f "$DEST")"
+  [[ "$DEST" != "/" ]] || die 'refusing to write backups directly into /'
+
+  STAMP="$(date +%Y%m%d_%H%M%S)"
+  HOST="$(hostname -s 2>/dev/null || hostname)"
+  OUT="$DEST/backup_${HOST}_${STAMP}.tar.gz"
+  SUM="$OUT.sha256"
+
+  WORK="$(mktemp -d)"
+  trap 'rm -rf "$WORK"' EXIT
+
+  collect_paths
+  ((${#KEEP[@]} > 0)) || die 'no paths found to back up'
+
+  write_metadata "$WORK/metadata"
+  create_archive "$WORK" "$WORK/tar.stderr"
+
+  sha256sum "$OUT" > "$SUM"
+
+  if [[ -s "$WORK/tar.stderr" ]]; then
+    log 'tar emitted warnings:'
+    sed 's/^/[backup]   /' "$WORK/tar.stderr" >&2
+  fi
+
+  log "archive: $OUT"
+  log "sha256 : $SUM"
+  log "paths  : ${#KEEP[@]}"
+  log "size   : $(du -h "$OUT" | cut -f1)"
+}
+
+main "$@"
