@@ -1,15 +1,8 @@
 #!/bin/bash
-# cool.sh — audit service configs for exploitable misconfigurations
-# Targets: Ubuntu Server 24.04, Rocky Linux 9
-# Services: apache2 nginx openssh vsftpd samba bind postgres
-# Focus: findings that directly enable attacker access, privilege, or data exfil.
-# Noise (info headers, logging, banners, version fingerprints) deliberately excluded.
-#
-# Usage:   ./cool.sh <service|all> [service ...]
+# find backdoors on services
 
 BODY=""; _VAL=""; COUNT_CRIT=0; COUNT_HIGH=0; COUNT_MED=0
 
-# load one or more glob patterns into BODY. returns 1 if nothing found.
 load_configs() {
     BODY=""
     local f pat found=1
@@ -25,7 +18,6 @@ load_configs() {
     return $found
 }
 
-# "key value" directives (sshd_config, apache, bind)
 get_dir() {
     _VAL=$(printf '%s\n' "$BODY" \
         | grep -iE "^[[:space:]]*$1[[:space:]]+" | grep -v '^[[:space:]]*#' | head -1 \
@@ -33,7 +25,6 @@ get_dir() {
         | xargs 2>/dev/null) || true
 }
 
-# "key = value" directives (vsftpd, postgresql.conf)
 get_eq() {
     _VAL=$(printf '%s\n' "$BODY" \
         | grep -iE "^[[:space:]]*$1[[:space:]]*=" | grep -v '^[[:space:]]*#' | head -1 \
@@ -43,7 +34,6 @@ get_eq() {
 
 body_has() { printf '%s\n' "$BODY" | grep -qiE "$1"; }
 
-# hit SEV TITLE FIX
 hit() {
     printf '  [%-8s] %s\n             fix: %s\n' "$1" "$2" "$3"
     case "$1" in CRITICAL) COUNT_CRIT=$((COUNT_CRIT+1)) ;;
@@ -51,7 +41,7 @@ hit() {
                  MEDIUM)   COUNT_MED=$((COUNT_MED+1))  ;; esac
 }
 
-# ─── APACHE2 / HTTPD ────────────────────────────────────────────────────────
+# apache2 web server
 check_apache2() {
     load_configs \
         '/etc/apache2/apache2.conf' '/etc/apache2/conf-enabled/*.conf' \
@@ -98,7 +88,7 @@ check_apache2() {
     fi
 }
 
-# ─── NGINX ──────────────────────────────────────────────────────────────────
+# nginx web server/proxy
 check_nginx() {
     load_configs \
         '/etc/nginx/nginx.conf' '/etc/nginx/conf.d/*.conf' \
@@ -122,7 +112,7 @@ check_nginx() {
     fi
 }
 
-# ─── OPENSSH ────────────────────────────────────────────────────────────────
+# openssh ssh server
 check_openssh() {
     load_configs '/etc/ssh/sshd_config' '/etc/ssh/sshd_config.d/*.conf' \
         || { echo "  (not installed)"; return; }
@@ -184,7 +174,7 @@ check_openssh() {
     fi
 }
 
-# ─── VSFTPD ─────────────────────────────────────────────────────────────────
+# vsftpd ftp server
 check_vsftpd() {
     load_configs '/etc/vsftpd.conf' '/etc/vsftpd/vsftpd.conf' \
         || { echo "  (not installed)"; return; }
@@ -231,7 +221,7 @@ check_vsftpd() {
     fi
 }
 
-# ─── SAMBA ──────────────────────────────────────────────────────────────────
+# samba smb server
 get_global_smb() {
     _VAL=$(printf '%s\n' "$BODY" | awk -v key="${1,,}" '
         /^\[global\]/                   { in_g=1; next }
@@ -293,7 +283,7 @@ check_samba() {
             'restrict anonymous = 2'
 }
 
-# ─── BIND DNS ───────────────────────────────────────────────────────────────
+# named dns server
 check_bind() {
     load_configs \
         '/etc/bind/named.conf' '/etc/bind/named.conf.options' \
@@ -322,7 +312,7 @@ check_bind() {
             'allow-query { your_network; };'
 }
 
-# ─── POSTGRESQL ─────────────────────────────────────────────────────────────
+# postgresql
 check_postgres() {
     local pg_body="" pg_path="" hba_body="" hba_path="" f pat
     shopt -s nullglob
@@ -405,7 +395,7 @@ check_postgres() {
     fi
 }
 
-# ─── main ───────────────────────────────────────────────────────────────────
+# script starts running from here
 ALL=(apache2 nginx openssh vsftpd samba bind postgres)
 
 if (( $# == 0 )); then

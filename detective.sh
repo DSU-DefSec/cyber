@@ -1,6 +1,5 @@
 #!/bin/bash
-# detective.sh — network + backdoor audit (Ubuntu 24.04 / Rocky 9)
-# Silent = clean. Output = problem. Focus: attacker access, privilege, persistence.
+# find backdoors on systems
 
 RED=$'\033[0;31m'; YEL=$'\033[1;33m'; GRN=$'\033[0;32m'
 CYN=$'\033[0;36m'; B=$'\033[1m'; R=$'\033[0m'
@@ -18,9 +17,8 @@ IS_DEB=0; IS_RPM=0
 
 echo "${B}${CYN} detective │ $(hostname) │ ${PRETTY_NAME:-$ID} │ $(date '+%H:%M %b %d')${R}"
 
-# ── NETWORK ─────────────────────────────────────────────────────────────────
-hdr "NETWORK"
-EXPECTED="20 21 22 25 53 80 110 143 443 465 587 993 995 3306 5432 6379 8080 8443"
+# check for network listeners
+hdr "NETWORK LISTENERS:"
 
 if command -v ss &>/dev/null; then
     LISTEN=$(ss -tlnp 2>/dev/null | tail -n +2)
@@ -38,7 +36,7 @@ while IFS= read -r line; do
     echo "$EXPECTED" | grep -wq "$port" && continue
     pid=$(echo "$line" | grep -oP 'pid=\K\d+')
     bin=$([[ -n $pid ]] && readlink /proc/"$pid"/exe 2>/dev/null || echo unknown)
-    hit "unexpected listener :$port → $bin"
+    hit "listener :$port → $bin"
     net_hit=1
 done <<< "$LISTEN"
 (( net_hit == 0 )) && ok "no unexpected listening ports"
@@ -48,7 +46,7 @@ if [[ -n $ESTAB ]]; then
     echo "$ESTAB" | awk '{printf "       %s  %s\n", $5, $NF}'
 fi
 
-# /proc/net/tcp vs ss — rootkit port hiding
+# look for hidden open ports 
 PROC_PORTS=$(awk 'NR>1 && $4=="0A" {printf "%d\n", strtonum("0x" substr($2, index($2,":")+1))}' \
     /proc/net/tcp /proc/net/tcp6 2>/dev/null | sort -nu)
 SS_PORTS=$(echo "$LISTEN" | grep -oP '(?<=[:\]])\d+(?=\s)' | sort -nu)
@@ -56,7 +54,7 @@ for p in $PROC_PORTS; do
     echo "$SS_PORTS" | grep -qw "$p" || hit "port $p in /proc/net/tcp but NOT in ss — rootkit?"
 done
 
-# Firewall DNAT/REDIRECT — traffic hijacking
+# firewall redirection / hijacking
 if command -v nft &>/dev/null; then
     nft list ruleset 2>/dev/null | grep -iE 'dnat|redirect' | while read -r l; do
         hit "nftables NAT rule: $l"
@@ -69,13 +67,13 @@ for ipt in iptables iptables-legacy; do
     done
 done
 
-# /etc/hosts tampering — DNS hijack
+# tampered entries in local cache
 grep -vE '^\s*(#|$)' /etc/hosts 2>/dev/null | \
     grep -vE '^\s*(127\.|::1|ff02::|fe00::|255\.255\.255\.255)' | while read -r l; do
     warn "non-loopback /etc/hosts: $l"
 done
 
-# ── BINARY INTEGRITY ────────────────────────────────────────────────────────
+# check for backdoored binaries
 hdr "BINARY INTEGRITY"
 
 if (( IS_DEB )); then
@@ -85,13 +83,13 @@ if (( IS_DEB )); then
     else
         warn "debsums missing — using dpkg -V (binaries only)"
         # Only md5 mismatches (pos 3 == 5), non-conffiles, under bin/lib paths.
-        # Missing/unreadable files are ignored — we want backdoored binaries.
+        # check only for backdoored binaries, not missing ones
         dpkg -V 2>/dev/null | awk '$1 ~ /^..5/ && $2 != "c" {print}' | \
             grep -E '/(s?bin|lib|lib64)/' | \
             while read -r l; do hit "dpkg -V: $l"; done
     fi
 elif (( IS_RPM )); then
-    # Only md5/size/mode changes on non-conffile binaries/libs.
+    # Only md5/size/mode changes on non-config file binaries/libs.
     rpm -Va 2>/dev/null | awk '$1 ~ /^.{0,8}[5SM]/ && $2 != "c" {print}' | \
         grep -E '/(s?bin|lib|lib64)/' | \
         while read -r l; do hit "rpm -Va: $l"; done
@@ -113,7 +111,7 @@ while IFS= read -r f; do
     file "$f" 2>/dev/null | grep -q ELF && hit "ELF in staging: $f"
 done < <(find /tmp /dev/shm /var/tmp -type f 2>/dev/null)
 
-# Deleted-binary processes (fileless)
+# check for ghost binaries
 for pid in /proc/[0-9]*/exe; do
     readlink "$pid" 2>/dev/null | grep -q '(deleted)' || continue
     n=${pid#/proc/}; n=${n%/exe}
@@ -129,14 +127,18 @@ for f in /etc/ld.so.conf.d/*.conf; do
 done
 [[ -n $LD_PRELOAD ]] && hit "LD_PRELOAD set in env: $LD_PRELOAD"
 
-# Recently modified system binaries (last 7d)
+# Recently modified system binaries
 find /bin /sbin /usr/bin /usr/sbin -type f -mtime -7 2>/dev/null | while read -r f; do
     warn "recently modified: $f ($(stat -c %y "$f" 2>/dev/null | cut -d. -f1))"
 done
 
-# SUID anomalies — anything outside known-good
+# nonstandard suid binarues
 KNOWN_SUID='/usr/bin/(passwd|sudo|su|chsh|chfn|gpasswd|newgrp|mount|umount|pkexec|crontab|at|ssh-agent|fusermount.?)$|/usr/lib/(openssh/ssh-keysign|dbus-1.0/dbus-daemon-launch-helper|polkit-1/polkit-agent-helper-1|snapd/snap-confine|eject/dmcrypt-get-device)|/usr/(libexec|sbin)/(pt_chown|unix_chkpwd|mount\.nfs)|/sbin/(mount\.nfs|unix_chkpwd)|/bin/(su|mount|umount|ping|fusermount)'
-find / -xdev -perm -4000 -type f 2>/dev/null | while read -r f; do
+find /usr/bin/ -xdev -perm -4000 -type f 2>/dev/null | while read -r f; do
+    echo "$f" | grep -qE "$KNOWN_SUID" || hit "unusual SUID: $f"
+done
+
+find /home -xdev -perm -4000 -type f 2>/dev/null | while read -r f; do
     echo "$f" | grep -qE "$KNOWN_SUID" || hit "unusual SUID: $f"
 done
 
@@ -153,7 +155,7 @@ if command -v lsattr &>/dev/null; then
         grep -E '^\S*i\S*\s' | while read -r l; do hit "immutable: $l"; done
 fi
 
-# ── USERS & SSH ─────────────────────────────────────────────────────────────
+# audit openssh 
 hdr "USERS & SSH"
 
 awk -F: '($3==0 && $1!="root"){print}' /etc/passwd | while read -r l; do
@@ -164,7 +166,7 @@ awk -F: '($6 ~ /^\/tmp|^\/dev|^\/var\/tmp/){print}' /etc/passwd | while read -r 
     hit "suspicious home: $l"
 done
 
-# Unlocked system accounts (should have ! or * in shadow)
+# system accounts with shells
 awk -F: '($2 !~ /^[!*]/ && $2 != "") {print $1}' /etc/shadow 2>/dev/null | while read -r u; do
     uid=$(id -u "$u" 2>/dev/null)
     [[ -z $uid || $uid -ge 1000 || $u == root ]] && continue
@@ -200,7 +202,7 @@ grep -rhE '^\s*[^#].*pam_exec\.so' /etc/pam.d/ 2>/dev/null | while read -r l; do
     hit "PAM pam_exec: $l"
 done
 
-# ── PERSISTENCE ─────────────────────────────────────────────────────────────
+# check for common persistence tactics
 hdr "PERSISTENCE"
 
 SUSPECT='(/tmp/|/dev/shm/|/var/tmp/|/dev/tcp|socat|mkfifo|base64\s+-d|wget.*\|.*sh|curl.*\|.*sh|bash\s+-i|nc\s+-e|python.*-c.*socket|perl.*-e.*socket)'
@@ -252,7 +254,7 @@ lsmod 2>/dev/null | awk 'NR>1 {print $1}' | while read -r m; do
     hit "kmod from unusual path: $m → $path"
 done
 
-# ── SUMMARY ─────────────────────────────────────────────────────────────────
+# print a summary of the findings
 echo
 mapfile -t ALL < "$FINDS"
 if (( ${#ALL[@]} == 0 )); then

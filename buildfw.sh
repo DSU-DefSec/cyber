@@ -1,15 +1,6 @@
 #!/bin/bash
 # Native static build of nftables for the host it runs on.
-# Intended targets: Ubuntu Server 24.04 and Rocky Linux 9.
-#
-# Minimum host requirements:
-#   - gcc (plus binutils: ld, ar, ranlib)
-#   - make
-#   - libc headers, kernel headers (linux/*.h)
-#
-# NOT required: bison, flex, pkg-config, autoconf, automake, libtool,
-# libmnl-dev, libnftnl-dev, libedit-dev, libgmp-dev. Everything needed
-# beyond a bare C toolchain is vendored in this repo.
+# depends on gcc, make and libc
 
 set -euo pipefail
 
@@ -29,9 +20,6 @@ for tool in gcc make ar ld; do
     fi
 done
 
-# Touch autotools-generated files in dependency order so make won't try
-# to regenerate them (which would require aclocal/autoconf/automake).
-# Order matters: sources first, then generated files newer than sources.
 fix_autotools_timestamps() {
     find . -name 'configure.ac' -exec touch {} +
     find . -name 'Makefile.am'  -exec touch {} +
@@ -56,8 +44,6 @@ echo "[1/3] libmnl"
 build libmnl-1.0.5
 
 echo "[2/3] libnftnl"
-# libnftnl's configure uses pkg-config for libmnl by default; bypass it by
-# passing LIBMNL_CFLAGS/LIBMNL_LIBS explicitly so we don't need pkg-config.
 cd "$REPO_DIR/libnftnl-1.2.6"
 make distclean >/dev/null 2>&1 || true
 fix_autotools_timestamps
@@ -72,10 +58,6 @@ cd "$REPO_DIR/nftables-1.0.9"
 make distclean >/dev/null 2>&1 || true
 fix_autotools_timestamps
 
-# Mark pre-generated parser/scanner files as up-to-date so make never
-# tries to regenerate them from the .y/.l sources. This eliminates the
-# build-time dependency on bison and flex. Must come AFTER
-# fix_autotools_timestamps so these stay the newest files in the tree.
 touch src/parser_bison.c src/parser_bison.h src/scanner.c
 
 ./configure --prefix="$OUTPUT" \
@@ -84,13 +66,8 @@ touch src/parser_bison.c src/parser_bison.h src/scanner.c
     LIBMNL_CFLAGS="-I$OUTPUT/include"   LIBMNL_LIBS="-L$OUTPUT/lib -lmnl" \
     LIBNFTNL_CFLAGS="-I$OUTPUT/include" LIBNFTNL_LIBS="-L$OUTPUT/lib -lnftnl"
 
-# Build only src/ — we want the nft binary, nothing else. Skips doc/
-# (man pages via a2x/asciidoc), examples/, py/, etc.
-# -all-static forces libtool to produce a fully static final executable.
 make -C src -j"$(nproc)" LDFLAGS="-all-static -L$OUTPUT/lib"
 
-# Drop the finished binary in the repo root. It's fully static — no
-# other files are needed alongside it.
 cp src/nft "$REPO_DIR/nft"
 
 echo
