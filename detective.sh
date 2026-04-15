@@ -51,7 +51,7 @@ PROC_PORTS=$(awk 'NR>1 && $4=="0A" {printf "%d\n", strtonum("0x" substr($2, inde
     /proc/net/tcp /proc/net/tcp6 2>/dev/null | sort -nu)
 SS_PORTS=$(echo "$LISTEN" | grep -oP '(?<=[:\]])\d+(?=\s)' | sort -nu)
 for p in $PROC_PORTS; do
-    echo "$SS_PORTS" | grep -qw "$p" || hit "port $p in /proc/net/tcp but NOT in ss — rootkit?"
+    echo "$SS_PORTS" | grep -qw "$p" || hit "port $p in /proc/net/tcp but NOT in ss - rootkit?"
 done
 
 # firewall redirection / hijacking
@@ -81,7 +81,7 @@ if (( IS_DEB )); then
         debsums -c 2>/dev/null | grep -E '/(s?bin|lib|lib64)/' | \
             while read -r l; do hit "debsums: $l"; done
     else
-        warn "debsums missing — using dpkg -V (binaries only)"
+        warn "debsums missing - using dpkg -V (binaries only)"
         # Only md5 mismatches (pos 3 == 5), non-conffiles, under bin/lib paths.
         # check only for backdoored binaries, not missing ones
         dpkg -V 2>/dev/null | awk '$1 ~ /^..5/ && $2 != "c" {print}' | \
@@ -99,9 +99,9 @@ fi
 for bin in /sbin/nologin /usr/sbin/nologin /bin/false /usr/bin/false; do
     [[ -f $bin ]] || continue
     strings "$bin" 2>/dev/null | grep -qiE '(/bin/sh|/bin/bash|/dev/tcp|socat|nc -e|bash -i)' \
-        && hit "$bin contains shell strings — backdoor"
+        && hit "$bin contains shell strings - backdoor"
     [[ $bin == *nologin ]] && ! strings "$bin" 2>/dev/null | grep -qiE '(not available|not allowed|account)' \
-        && hit "$bin missing denial strings — possible shell swap"
+        && hit "$bin missing denial strings - possible shell swap"
 done
 grep -qE '^/(s?bin|usr/(s?bin)?)/(nologin|false)$' /etc/shells 2>/dev/null \
     && hit "/etc/shells lists nologin/false"
@@ -118,7 +118,7 @@ for pid in /proc/[0-9]*/exe; do
     hit "PID $n from DELETED binary: $(ps -p "$n" -o cmd= 2>/dev/null)"
 done
 
-# Preload hooks — LKM/library injection
+# Preload hooks - LKM/library injection
 [[ -f /etc/ld.so.preload ]] && hit "/etc/ld.so.preload: $(cat /etc/ld.so.preload)"
 for f in /etc/ld.so.conf.d/*.conf; do
     [[ -f $f ]] || continue
@@ -184,7 +184,7 @@ while IFS=: read -r user _ _ _ _ homedir _; do
     [[ -f $ak ]] || continue
     count=$(grep -cvE '^\s*(#|$)' "$ak" 2>/dev/null || echo 0)
     (( count )) || continue
-    warn "$user — $count SSH key(s) in $ak:"
+    warn "$user - $count SSH key(s) in $ak:"
     grep -vE '^\s*(#|$)' "$ak" | awk '{printf "       [%s] %s\n", $1, $3}'
 done < /etc/passwd
 
@@ -197,7 +197,7 @@ akf=$(grep -iE '^\s*AuthorizedKeysFile' /etc/ssh/sshd_config 2>/dev/null | grep 
 grep -rhsiE 'NOPASSWD.*ALL|ALL.*NOPASSWD' /etc/sudoers /etc/sudoers.d/ 2>/dev/null \
     | grep -v '^\s*#' | while read -r l; do hit "sudoers NOPASSWD ALL: $l"; done
 
-# PAM pam_exec — command execution on auth
+# PAM pam_exec - command execution on auth
 grep -rhE '^\s*[^#].*pam_exec\.so' /etc/pam.d/ 2>/dev/null | while read -r l; do
     hit "PAM pam_exec: $l"
 done
@@ -258,9 +258,9 @@ done
 echo
 mapfile -t ALL < "$FINDS"
 if (( ${#ALL[@]} == 0 )); then
-    echo "${B}${GRN}SUMMARY — 0 findings${R}"
+    echo "${B}${GRN}SUMMARY - 0 findings${R}"
 else
-    echo "${B}${RED}SUMMARY — ${#ALL[@]} finding(s)${R}"
+    echo "${B}${RED}SUMMARY - ${#ALL[@]} finding(s)${R}"
     for i in "${!ALL[@]}"; do printf "  ${RED}${B}[%2d]${R} %s\n" "$((i+1))" "${ALL[$i]}"; done
 fi
 echo
