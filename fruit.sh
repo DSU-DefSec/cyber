@@ -49,30 +49,30 @@ check_apache2() {
         '/etc/httpd/conf.d/*.conf' || { echo "  (not installed)"; return; }
     local proto clean
 
-    # Directory listing — exposes files/backups/creds in docroot
+    # Directory listing - exposes files/backups/creds in docroot
     body_has 'Options[[:space:]][^#]*\bIndexes\b' && \
         hit HIGH 'Directory listing enabled (Options Indexes)' \
             'remove "Indexes" from all Options directives'
 
-    # FollowSymLinks without SymLinksIfOwnerMatch — docroot escape
+    # FollowSymLinks without SymLinksIfOwnerMatch - docroot escape
     if body_has 'Options[[:space:]][^#]*\bFollowSymLinks\b' && \
        ! body_has 'Options[[:space:]][^#]*\bSymLinksIfOwnerMatch\b'; then
         hit MEDIUM 'FollowSymLinks without SymLinksIfOwnerMatch (docroot escape risk)' \
             'replace FollowSymLinks with SymLinksIfOwnerMatch'
     fi
 
-    # AllowOverride All — .htaccess can override security directives
+    # AllowOverride All - .htaccess can override security directives
     body_has '^[[:space:]]*AllowOverride[[:space:]]+All\b' && \
-        hit MEDIUM 'AllowOverride All — .htaccess can override security rules' \
+        hit MEDIUM 'AllowOverride All - .htaccess can override security rules' \
             'AllowOverride None  (or only the directives you need)'
 
-    # TRACE method — XST cookie theft
+    # TRACE method - XST cookie theft
     get_dir TraceEnable
     [[ -z $_VAL || ${_VAL,,} != off ]] && \
         hit MEDIUM 'HTTP TRACE enabled (XST cookie theft)' \
             'TraceEnable Off'
 
-    # Weak TLS protocols — downgrade
+    # Weak TLS protocols - downgrade
     for proto in SSLv2 SSLv3 'TLSv1 ' 'TLSv1\.1'; do
         body_has "SSLProtocol[[:space:]][^#]*${proto}" || continue
         clean="${proto// /}"
@@ -80,7 +80,7 @@ check_apache2() {
             'SSLProtocol TLSv1.2 TLSv1.3'
     done
 
-    # /server-status without IP restriction — internals/URIs exposed
+    # /server-status without IP restriction - internals/URIs exposed
     if body_has '<Location[[:space:]][^>]*/server-status' && \
        ! body_has 'Require[[:space:]]+(ip|local|host)'; then
         hit HIGH '/server-status exposed without IP restriction' \
@@ -95,7 +95,7 @@ check_nginx() {
         '/etc/nginx/sites-enabled/*.conf' || { echo "  (not installed)"; return; }
     local proto_line proto clean
 
-    # autoindex on — directory listing
+    # autoindex on - directory listing
     body_has '^[[:space:]]*autoindex[[:space:]]+on[[:space:]]*;' && \
         hit HIGH 'Directory listing enabled (autoindex on)' \
             'autoindex off;'
@@ -145,7 +145,7 @@ check_openssh() {
     # MaxAuthTries (brute force aid)
     get_dir MaxAuthTries; v="${_VAL:-6}"
     if ! [[ $v =~ ^[0-9]+$ ]] || (( v > 4 )); then
-        hit MEDIUM "MaxAuthTries=${_VAL:-6} — too many attempts per connection" \
+        hit MEDIUM "MaxAuthTries=${_VAL:-6} - too many attempts per connection" \
             'MaxAuthTries 3'
     fi
 
@@ -162,7 +162,7 @@ check_openssh() {
 
     # AllowUsers/AllowGroups (reduces attack surface)
     body_has '^[[:space:]]*(AllowUsers|AllowGroups)[[:space:]]+' || \
-        hit MEDIUM 'No AllowUsers/AllowGroups — every system account can authenticate' \
+        hit MEDIUM 'No AllowUsers/AllowGroups - every system account can authenticate' \
             'AllowUsers <user1> <user2>'
 
 	# Backdoored AuthorizedKeysFile
@@ -186,7 +186,7 @@ check_vsftpd() {
         hit CRITICAL "Anonymous FTP enabled (anonymous_enable=${_VAL:-YES})" \
             'anonymous_enable=NO'
 
-    # Anonymous upload — webshell drop
+    # Anonymous upload - webshell drop
     get_eq anon_upload_enable
     [[ ${_VAL^^} == YES ]] && \
         hit CRITICAL 'Anonymous uploads enabled (webshell drop vector)' \
@@ -197,26 +197,26 @@ check_vsftpd() {
         hit HIGH 'Anonymous directory creation enabled' \
             'anon_mkdir_write_enable=NO'
 
-    # Local users not chrooted — filesystem traversal
+    # Local users not chrooted - filesystem traversal
     get_eq chroot_local_user; v="${_VAL^^}"
     [[ -z $v || $v != YES ]] && \
-        hit HIGH 'Local users not chrooted — full FS traversal via FTP' \
+        hit HIGH 'Local users not chrooted - full FS traversal via FTP' \
             'chroot_local_user=YES'
 
     # Cleartext credentials
     get_eq ssl_enable; v="${_VAL^^}"
     if [[ -z $v || $v != YES ]]; then
-        hit HIGH 'SSL/TLS disabled — FTP creds+data in cleartext' \
+        hit HIGH 'SSL/TLS disabled - FTP creds+data in cleartext' \
             'ssl_enable=YES + rsa_cert_file/rsa_private_key_file'
     else
         get_eq allow_anon_ssl
         [[ ${_VAL^^} == YES ]] && \
-            hit MEDIUM 'allow_anon_ssl=YES — SSL for anonymous sessions' \
+            hit MEDIUM 'allow_anon_ssl=YES - SSL for anonymous sessions' \
                 'allow_anon_ssl=NO'
         for d in force_local_data_ssl force_local_logins_ssl; do
             get_eq "$d"; v="${_VAL^^}"
             [[ -z $v || $v != YES ]] && \
-                hit MEDIUM "$d not enforced — plaintext fallback" "$d=YES"
+                hit MEDIUM "$d not enforced - plaintext fallback" "$d=YES"
         done
     fi
 }
@@ -243,37 +243,37 @@ check_samba() {
     # Null passwords
     get_global_smb 'null passwords'; v="${_VAL,,}"
     [[ $v == yes || $v == true || $v == 1 ]] && \
-        hit CRITICAL 'null passwords = yes — empty-password accounts accepted' \
+        hit CRITICAL 'null passwords = yes - empty-password accounts accepted' \
             'null passwords = no'
 
     # Guest access
     body_has '^[[:space:]]*guest ok[[:space:]]*=[[:space:]]*yes' && \
-        hit HIGH 'guest ok = yes on one or more shares — unauthenticated share access' \
+        hit HIGH 'guest ok = yes on one or more shares - unauthenticated share access' \
             'guest ok = no  (on every share)'
 
     get_global_smb 'map to guest'; v="${_VAL,,}"
     [[ $v == 'bad user' || $v == 'bad password' ]] && \
-        hit HIGH "map to guest = $_VAL — failed logins fall back to guest" \
+        hit HIGH "map to guest = $_VAL - failed logins fall back to guest" \
             'map to guest = never'
 
     # SMB signing / MITM
     get_global_smb 'server signing'; v="${_VAL,,}"
     [[ -z $v || $v == auto || $v == disabled || $v == no ]] && \
-        hit HIGH "server signing=${_VAL:-auto} — SMB packets MITM-tamperable" \
+        hit HIGH "server signing=${_VAL:-auto} - SMB packets MITM-tamperable" \
             'server signing = mandatory'
 
     # SMBv1 / EternalBlue
     for key in 'client min protocol' 'server min protocol'; do
         get_global_smb "$key"; v="${_VAL^^}"
         [[ -z $v || $v == NT1 || $v == LANMAN1 || $v == LANMAN2 || $v == CORE || $v == COREPLUS ]] && \
-            hit HIGH "$key=${_VAL:-unset} — SMBv1 (EternalBlue/MS17-010)" \
+            hit HIGH "$key=${_VAL:-unset} - SMBv1 (EternalBlue/MS17-010)" \
                 "$key = SMB2"
     done
 
     # Encryption
     get_global_smb 'smb encrypt'; v="${_VAL,,}"
     [[ -z $v || $v == auto || $v == disabled || $v == no ]] && \
-        hit MEDIUM "smb encrypt=${_VAL:-auto} — SMB traffic not end-to-end encrypted" \
+        hit MEDIUM "smb encrypt=${_VAL:-auto} - SMB traffic not end-to-end encrypted" \
             'smb encrypt = required'
 
     # Anonymous enumeration (share/user discovery)
@@ -290,25 +290,25 @@ check_bind() {
         '/etc/named.conf' '/etc/named/named.conf' '/etc/named/named.conf.options' \
         || { echo "  (not installed)"; return; }
 
-    # Open recursion — amplification DDoS, cache poisoning
+    # Open recursion - amplification DDoS, cache poisoning
     if body_has 'recursion[[:space:]]+yes[[:space:]]*;' && \
        ! body_has 'allow-recursion[[:space:]]*\{'; then
         hit CRITICAL 'Open recursive resolver (recursion yes; no allow-recursion)' \
             'allow-recursion { 127.0.0.1; <internal>; };'
     fi
 
-    # Zone transfer open — full zone dump
+    # Zone transfer open - full zone dump
     if body_has 'allow-transfer[[:space:]]*\{[^}]*\bany\b[^}]*\}'; then
         hit CRITICAL 'Zone transfers open to any host (allow-transfer { any; })' \
             'allow-transfer { <secondary_ns_ip>; };'
     elif ! body_has 'allow-transfer[[:space:]]*\{'; then
-        hit HIGH 'allow-transfer not configured — may default to open' \
+        hit HIGH 'allow-transfer not configured - may default to open' \
             'allow-transfer { none; };  globally'
     fi
 
     # allow-query not set
     body_has 'allow-query[[:space:]]*\{' || \
-        hit MEDIUM 'allow-query not configured — answers any source' \
+        hit MEDIUM 'allow-query not configured - answers any source' \
             'allow-query { your_network; };'
 }
 
@@ -337,12 +337,12 @@ check_postgres() {
 
         get_eq listen_addresses
         [[ $_VAL == '*' ]] && \
-            hit HIGH "listen_addresses='*' — DB port exposed on every interface" \
+            hit HIGH "listen_addresses='*' - DB port exposed on every interface" \
                 "listen_addresses = 'localhost'"
 
         get_eq ssl; v="${_VAL,,}"
         [[ -z $v || $v =~ ^(off|false|0|no)$ ]] && \
-            hit HIGH "ssl=${_VAL:-off} — cleartext credentials+data" \
+            hit HIGH "ssl=${_VAL:-off} - cleartext credentials+data" \
                 'ssl = on + ssl_cert_file/ssl_key_file'
 
         get_eq password_encryption; v="${_VAL,,}"
@@ -378,7 +378,7 @@ check_postgres() {
             hit MEDIUM "pg_hba.conf: ${#md5_lines[@]} md5 entry/entries (deprecated)" \
                 'use scram-sha-256 + password_encryption=scram-sha-256'
 
-        # Broad remote access rule — superuser / all users over network
+        # Broad remote access rule - superuser / all users over network
         while IFS= read -r line; do
             line="${line%%#*}"
             [[ -z ${line//[[:space:]]/} ]] && continue
@@ -410,7 +410,7 @@ for a in "$@"; do
     SERVICES+=("${a,,}")
 done
 
-printf '\n== fruit.sh — service config audit — %s ==\n' "$(date '+%F %T')"
+printf '\n== fruit.sh - service config audit - %s ==\n' "$(date '+%F %T')"
 
 for svc in "${SERVICES[@]}"; do
     fn="check_$svc"
