@@ -410,7 +410,7 @@ for a in "$@"; do
     SERVICES+=("${a,,}")
 done
 
-printf '\n== cool.sh — service config audit — %s ==\n' "$(date '+%F %T')"
+printf '\n== fruit.sh — service config audit — %s ==\n' "$(date '+%F %T')"
 
 for svc in "${SERVICES[@]}"; do
     fn="check_$svc"
