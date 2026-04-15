@@ -53,7 +53,6 @@ trap 'rm -f "$RULES"' EXIT
 for svc in firewalld ufw nftables iptables ip6tables; do
     systemctl stop    "$svc" 2>/dev/null || true
     systemctl disable "$svc" 2>/dev/null || true
-    systemctl mask    "$svc" 2>/dev/null || true
 done
 
 "$NFT" -f "$RULES"
