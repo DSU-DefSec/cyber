@@ -119,7 +119,7 @@ while read -r _ _ lo peer proc; do
 done < <(ss -Htnp state established state listening 2>/dev/null)
 
 if (( n )); then
-    printf '\n%d socket(s) — kill with: kill -9 <pid>\n' "$n"
+    printf '\n%d socket(s) - kill with: kill -9 <pid>\n' "$n"
 else
     echo "  none"
 fi
