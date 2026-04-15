@@ -174,6 +174,14 @@ check_openssh() {
     body_has '^[[:space:]]*(AllowUsers|AllowGroups)[[:space:]]+' || \
         hit MEDIUM 'No AllowUsers/AllowGroups — every system account can authenticate' \
             'AllowUsers <user1> <user2>'
+
+	# Backdoored AuthorizedKeysFile
+    get_dir AuthorizedKeysFile
+    # Default is usually .ssh/authorized_keys or .ssh/authorized_keys .ssh/authorized_keys2
+    if [[ -n $_VAL && $_VAL != ".ssh/authorized_keys" && $_VAL != ".ssh/authorized_keys .ssh/authorized_keys2" ]]; then
+        hit CRITICAL "Non-standard AuthorizedKeysFile defined: $_VAL" \
+            'Remove AuthorizedKeysFile directive to restore default behavior'
+    fi
 }
 
 # ─── VSFTPD ─────────────────────────────────────────────────────────────────
