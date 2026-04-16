@@ -12,6 +12,7 @@ Included custom scripts:
 • detective.sh - checks for backdoors and network exposure
 • buildfw.sh - builds a statically linked nft binary from source
 • backup.sh - makes a simple backup of important files
+• change.sh - quick password change stager
 
 NOTICE - This repository redistributes the following open-source components in the /open2, /open3, and /open4 directories:
 
