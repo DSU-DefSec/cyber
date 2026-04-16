@@ -23,7 +23,7 @@ NOTICE - This repository redistributes the following open-source components in t
 • linpeas.sh (unmodified script) - obtained from https://github.com/peass-ng/PEASS-ng/
 
 /open3 (GPLv3 Licensed)
-• lynis.sh (unmodified script) - obtained from https://github.com/CISOfy/lynis
+• lynis project (unmodified source code) - obtained from https://github.com/CISOfy/lynis
 • pspy64 (unmodified binary) - obtained from https://github.com/DominicBreuker/pspy/releases/tag/v1.2.1
 
 /open4 (BSD 2-Clause License)
