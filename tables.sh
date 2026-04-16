@@ -9,7 +9,10 @@ NFT="$HERE/nft"
 [[ -x $NFT ]] || { echo "no nft at $NFT"; exit 1; }
 "$NFT" list ruleset &>/dev/null || { echo "nft not working"; exit 1; }
 
-IU=() IT=() OU=() OT=()
+IU=() IT=() OU=(67 53 123) OT=(443 80 53)
+
+#SCORING_ENGINES="10.0.0.1, 10.0.0.2"
+
 while (( $# )); do
     case $1 in
         -IU) shift; while (( $# )) && [[ $1 != -* ]]; do IU+=("$1"); shift; done ;;
@@ -36,6 +39,7 @@ trap 'rm -f "$RULES"' EXIT
     echo '        type filter hook input priority 0; policy drop;'
     echo '        iif lo accept'
     echo '        ct state established,related accept'
+#    [[ -n "${SCORING_ENGINES:-}" ]] && echo "        ip saddr != { $SCORING_ENGINES } drop"
     allow udp "${IU[@]}"
     allow tcp "${IT[@]}"
     echo '    }'

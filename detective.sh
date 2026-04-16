@@ -132,7 +132,7 @@ find /bin /sbin /usr/bin /usr/sbin -type f -mtime -7 2>/dev/null | while read -r
     warn "recently modified: $f ($(stat -c %y "$f" 2>/dev/null | cut -d. -f1))"
 done
 
-# nonstandard suid binarues
+# nonstandard suid binaries
 KNOWN_SUID='/usr/bin/(passwd|sudo|su|chsh|chfn|gpasswd|newgrp|mount|umount|pkexec|crontab|at|ssh-agent|fusermount.?)$|/usr/lib/(openssh/ssh-keysign|dbus-1.0/dbus-daemon-launch-helper|polkit-1/polkit-agent-helper-1|snapd/snap-confine|eject/dmcrypt-get-device)|/usr/(libexec|sbin)/(pt_chown|unix_chkpwd|mount\.nfs)|/sbin/(mount\.nfs|unix_chkpwd)|/bin/(su|mount|umount|ping|fusermount)'
 find /usr/bin/ -xdev -perm -4000 -type f 2>/dev/null | while read -r f; do
     echo "$f" | grep -qE "$KNOWN_SUID" || hit "unusual SUID: $f"

@@ -11,6 +11,7 @@ Included custom scripts:
 • fruit.sh - checks for vulnerable misconfigurations in common service config files
 • detective.sh - checks for backdoors and network exposure
 • buildfw.sh - builds a statically linked nft binary from source
+• backup.sh - makes a simple backup of important files
 
 NOTICE - This repository redistributes the following open-source components in the /open2, /open3, and /open4 directories:
 
