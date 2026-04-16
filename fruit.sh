@@ -86,6 +86,16 @@ check_apache2() {
         hit HIGH '/server-status exposed without IP restriction' \
             'add "Require ip 127.0.0.1" inside the <Location /server-status>'
     fi
+
+    # ExecCGI in Options - enables CGI script execution (RCE if dir is writable)
+    body_has 'Options[[:space:]][^#]*\bExecCGI\b' && \
+        hit HIGH 'Options ExecCGI enabled - CGI execution allowed in directory (RCE if writable)' \
+            'Remove ExecCGI from Options; use ScriptAlias only for trusted CGI dirs'
+
+    # Includes in Options - enables Server-Side Include exec directives
+    body_has 'Options[[:space:]][^#]*\bIncludes\b' && \
+        hit HIGH 'Options Includes enabled - SSI exec directives allowed (RCE vector)' \
+            'Remove Includes from Options; use IncludesNOEXEC if SSI output is needed'
 }
 
 # nginx web server/proxy
@@ -110,6 +120,15 @@ check_nginx() {
                 'ssl_protocols TLSv1.2 TLSv1.3;'
         done
     fi
+
+    # Weak cipher groups explicitly in ssl_ciphers
+    local cipher
+    for cipher in RC4 '3DES' 'NULL' EXPORT aNULL ADH; do
+        body_has "ssl_ciphers[^;]*${cipher}" || continue
+        hit HIGH "Weak cipher group in ssl_ciphers: $cipher" \
+            'ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:!RC4:!3DES:!aNULL;'
+        break
+    done
 }
 
 # openssh ssh server
@@ -165,13 +184,61 @@ check_openssh() {
         hit MEDIUM 'No AllowUsers/AllowGroups - every system account can authenticate' \
             'AllowUsers <user1> <user2>'
 
-	# Backdoored AuthorizedKeysFile
+    # Backdoored AuthorizedKeysFile
     get_dir AuthorizedKeysFile
     # Default is usually .ssh/authorized_keys or .ssh/authorized_keys .ssh/authorized_keys2
     if [[ -n $_VAL && $_VAL != ".ssh/authorized_keys" && $_VAL != ".ssh/authorized_keys .ssh/authorized_keys2" ]]; then
         hit CRITICAL "Non-standard AuthorizedKeysFile defined: $_VAL" \
             'Remove AuthorizedKeysFile directive to restore default behavior'
     fi
+
+    # AuthorizedKeysCommand - external binary can inject arbitrary public keys
+    get_dir AuthorizedKeysCommand
+    [[ -n $_VAL && ${_VAL,,} != none ]] && \
+        hit CRITICAL "AuthorizedKeysCommand=$_VAL - external program provides authorized keys (backdoor if tampered)" \
+            'Remove AuthorizedKeysCommand unless intentional; verify the binary is trusted and unmodified'
+
+    # StrictModes no - SSH will accept world-writable authorized_keys files
+    get_dir StrictModes; v="${_VAL,,}"
+    [[ $v == no ]] && \
+        hit CRITICAL 'StrictModes no - SSH accepts world-writable authorized_keys (trivial key injection)' \
+            'StrictModes yes'
+
+    # AllowTcpForwarding - turns SSH into a TCP pivot / tunnel
+    get_dir AllowTcpForwarding; v="${_VAL,,}"
+    [[ -z $v || $v == yes ]] && \
+        hit HIGH 'AllowTcpForwarding enabled - SSH can be used as a TCP tunnel or pivot point' \
+            'AllowTcpForwarding no'
+
+    # GatewayPorts - remote port-forwards bind on 0.0.0.0 instead of 127.0.0.1
+    get_dir GatewayPorts; v="${_VAL,,}"
+    [[ $v == yes || $v == clientspecified ]] && \
+        hit HIGH "GatewayPorts=$_VAL - remote port-forwards accessible on all interfaces" \
+            'GatewayPorts no'
+
+    # PermitTunnel - tun/tap VPN-style device tunneling
+    get_dir PermitTunnel; v="${_VAL,,}"
+    [[ -n $v && $v != no ]] && \
+        hit HIGH "PermitTunnel=$_VAL - VPN-style tun/tap tunneling allowed over SSH" \
+            'PermitTunnel no'
+
+    # HostbasedAuthentication - auth based on hostname (spoofable)
+    get_dir HostbasedAuthentication; v="${_VAL,,}"
+    [[ $v == yes ]] && \
+        hit HIGH 'HostbasedAuthentication yes - host-based auth enabled (hostname is spoofable)' \
+            'HostbasedAuthentication no'
+
+    # X11Forwarding - X11 connections tunneled over SSH
+    get_dir X11Forwarding; v="${_VAL,,}"
+    [[ -z $v || $v == yes ]] && \
+        hit MEDIUM 'X11Forwarding enabled - X11 connections can be tunneled over SSH' \
+            'X11Forwarding no'
+
+    # UsePAM no - bypasses PAM stack (account lockout, MFA, etc.)
+    get_dir UsePAM; v="${_VAL,,}"
+    [[ $v == no ]] && \
+        hit MEDIUM 'UsePAM no - PAM modules bypassed (account lockout and MFA checks skipped)' \
+            'UsePAM yes'
 }
 
 # vsftpd ftp server
@@ -310,6 +377,16 @@ check_bind() {
     body_has 'allow-query[[:space:]]*\{' || \
         hit MEDIUM 'allow-query not configured - answers any source' \
             'allow-query { your_network; };'
+
+    # allow-update open to any - attackers can modify zone records
+    body_has 'allow-update[[:space:]]*\{[^}]*\bany\b[^}]*\}' && \
+        hit CRITICAL 'Dynamic DNS updates open to any host (allow-update { any; }) - zone poisoning' \
+            'allow-update { none; };  (or restrict to specific DDNS IPs)'
+
+    # BIND version string not hidden - fingerprintable via DNS query
+    body_has 'version[[:space:]]*"' || \
+        hit MEDIUM 'BIND version string not hidden - reveals exact version via DNS CHAOS query' \
+            'Add: version "not disclosed";  inside options { } block'
 }
 
 # postgresql
@@ -395,8 +472,152 @@ check_postgres() {
     fi
 }
 
+# mysql / mariadb database server
+check_mysql() {
+    load_configs \
+        '/etc/mysql/my.cnf' '/etc/mysql/mysql.conf.d/mysqld.cnf' \
+        '/etc/mysql/conf.d/mysqld.cnf' \
+        '/etc/mysql/mariadb.conf.d/50-server.cnf' \
+        '/etc/my.cnf' '/etc/my.cnf.d/*.cnf' \
+        || { echo "  (not installed)"; return; }
+    local v
+
+    # skip-grant-tables - completely disables all authentication
+    body_has '^[[:space:]]*skip[-_]grant[-_]tables' && \
+        hit CRITICAL 'skip-grant-tables is set - ALL MySQL/MariaDB authentication bypassed' \
+            'Remove skip-grant-tables from [mysqld] and restart the service'
+
+    # local-infile - read arbitrary server-side files via SQL
+    get_eq local-infile; v="${_VAL,,}"
+    [[ -z $v ]] && { get_eq local_infile; v="${_VAL,,}"; }
+    [[ $v == 1 || $v == on || $v == true ]] && \
+        hit HIGH 'local-infile=1 - arbitrary server file read via LOAD DATA LOCAL INFILE' \
+            'local-infile=0  in [mysqld] section'
+
+    # bind-address exposed to all interfaces
+    get_eq bind-address; v="$_VAL"
+    [[ -z $v ]] && { get_eq bind_address; v="$_VAL"; }
+    if [[ $v == '0.0.0.0' || $v == '::' || $v == '*' ]]; then
+        hit HIGH "bind-address=$v - MySQL/MariaDB port exposed on all network interfaces" \
+            'bind-address=127.0.0.1'
+    elif [[ -z $v ]]; then
+        hit MEDIUM 'bind-address not set - MySQL/MariaDB may be listening on all interfaces' \
+            'bind-address=127.0.0.1  in [mysqld] section'
+    fi
+
+    # secure-file-priv not set - SELECT INTO OUTFILE can write to any path
+    get_eq secure-file-priv; v="$_VAL"
+    [[ -z $v ]] && { get_eq secure_file_priv; v="$_VAL"; }
+    [[ -z $v || $v == '""' || $v == "''" ]] && \
+        hit HIGH 'secure-file-priv not set - INTO OUTFILE / LOAD DATA can access any filesystem path' \
+            'secure-file-priv=/var/lib/mysql-files  in [mysqld] section'
+}
+
+# php interpreter
+check_php() {
+    load_configs \
+        '/etc/php/*/apache2/php.ini' '/etc/php/*/cli/php.ini' \
+        '/etc/php/*/fpm/php.ini' '/etc/php.ini' '/usr/local/lib/php.ini' \
+        || { echo "  (not installed)"; return; }
+    local v
+
+    # allow_url_include - Remote File Inclusion via require/include
+    get_eq allow_url_include; v="${_VAL,,}"
+    [[ $v == on || $v == 1 || $v == true ]] && \
+        hit CRITICAL 'allow_url_include=On - Remote File Inclusion (RFI) via require/include' \
+            'allow_url_include=Off'
+
+    # allow_url_fopen - PHP can fetch arbitrary remote URLs (SSRF, remote payload)
+    get_eq allow_url_fopen; v="${_VAL,,}"
+    [[ -z $v || $v == on || $v == 1 ]] && \
+        hit HIGH 'allow_url_fopen=On - PHP can open remote URLs (SSRF / remote payload fetch)' \
+            'allow_url_fopen=Off'
+
+    # disable_functions empty - exec/system/shell_exec/passthru all available
+    get_eq disable_functions; v="$_VAL"
+    [[ -z $v ]] && \
+        hit HIGH 'disable_functions is empty - exec,system,shell_exec,passthru etc. all callable' \
+            'disable_functions=exec,passthru,shell_exec,system,proc_open,popen,show_source'
+}
+
+# cron job backdoor detection
+check_cron() {
+    load_configs '/etc/crontab' '/etc/cron.d/*' '/var/spool/cron/crontabs/*' \
+        || { echo "  (no cron files found)"; return; }
+    local f fperms
+
+    # Cron files that are group/world-writable - anyone can plant a job
+    shopt -s nullglob
+    for f in /etc/crontab /etc/cron.d/*; do
+        [[ -f $f ]] || continue
+        fperms=$(stat -c '%a' "$f" 2>/dev/null) || continue
+        (( 8#$fperms & 022 )) && \
+            hit CRITICAL "Cron file is group/world-writable: $f (mode $fperms)" \
+                "chmod 644 \"$f\"; chown root:root \"$f\""
+    done
+    shopt -u nullglob
+
+    # Netcat reverse shell pattern
+    body_has '\bnc\b.+-[el][[:space:]]|\bncat\b|\bnetcat\b.+-[el][[:space:]]' && \
+        hit CRITICAL 'Possible netcat reverse shell in a cron job' \
+            'Audit /etc/crontab and /etc/cron.d/*; remove suspicious entries'
+
+    # Script executed from /tmp - common backdoor staging area
+    body_has '[[:space:]]/tmp/' && \
+        hit CRITICAL 'Cron job executes a file from /tmp (common backdoor staging path)' \
+            'Remove cron entries that reference /tmp'
+
+    # base64 decode piped to shell
+    body_has 'base64.*(--decode|-d[[:space:]])' && \
+        hit HIGH 'Cron job base64-decodes a payload - likely obfuscated command execution' \
+            'Audit cron files for base64-encoded commands'
+
+    # Download from raw IP address (not hostname) - C2 callback
+    body_has '(wget|curl)[[:space:]].*[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' && \
+        hit HIGH 'Cron job fetches content from a raw IP address (possible C2 callback)' \
+            'Remove cron entries downloading from IP addresses'
+
+    # Interpreter one-liner with network/exec (python/perl reverse shell)
+    body_has '(python[23]?|perl|ruby|php)[[:space:]].*-[ce][[:space:]]' && \
+        hit HIGH 'Cron job runs interpreter one-liner - possible scripted reverse shell' \
+            'Audit cron entries for python/perl/ruby -e/-c one-liners'
+}
+
+# sudoers privilege escalation checks
+check_sudoers() {
+    load_configs '/etc/sudoers' '/etc/sudoers.d/*' \
+        || { echo "  (not accessible)"; return; }
+    local f fperms
+
+    # NOPASSWD - passwordless privilege escalation
+    body_has 'NOPASSWD' && \
+        hit HIGH 'NOPASSWD found in sudoers - privilege escalation without a password' \
+            'Remove NOPASSWD or restrict to specific safe, non-shell commands'
+
+    # Full unrestricted NOPASSWD: ALL
+    body_has 'NOPASSWD[[:space:]]*:[[:space:]]*ALL[[:space:]]*$' && \
+        hit CRITICAL 'sudoers: unrestricted NOPASSWD: ALL - trivial full root access' \
+            'Remove the rule or restrict to a specific whitelisted command'
+
+    # !authenticate tag - equivalent bypass
+    body_has '!authenticate' && \
+        hit HIGH 'sudoers: !authenticate tag found - password check bypassed for affected rule' \
+            'Remove !authenticate from sudoers'
+
+    # World-/group-writable files in sudoers.d
+    shopt -s nullglob
+    for f in /etc/sudoers.d/*; do
+        [[ -f $f ]] || continue
+        fperms=$(stat -c '%a' "$f" 2>/dev/null) || continue
+        (( 8#$fperms & 022 )) && \
+            hit CRITICAL "sudoers.d file is group/world-writable: $f (mode $fperms)" \
+                "chmod 440 \"$f\"; chown root:root \"$f\""
+    done
+    shopt -u nullglob
+}
+
 # script starts running from here
-ALL=(apache2 nginx openssh vsftpd samba bind postgres)
+ALL=(apache2 nginx openssh vsftpd samba bind postgres mysql php cron sudoers)
 
 if (( $# == 0 )); then
     echo "usage: $0 <service|all> [service ...]"
