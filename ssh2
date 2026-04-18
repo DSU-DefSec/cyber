@@ -1,0 +1,12 @@
+for u in gloucester leicester leominster; do
+  home=$(getent passwd "$u" | cut -d: -f6)
+  mkdir -p "$home/.ssh"
+  cp /home/scituate/.ssh/authorized_keys "$home/.ssh/authorized_keys"
+  chown -R "$u:$u" "$home/.ssh"
+  chmod 700 "$home/.ssh"
+  chmod 600 "$home/.ssh/authorized_keys"
+  chown "$u:$u" "$home"
+  chmod 755 "$home"
+done
+restorecon -Rv /home/gloucester /home/leicester /home/leominster 2>/dev/null || true
+sshd -t && systemctl reload sshd
