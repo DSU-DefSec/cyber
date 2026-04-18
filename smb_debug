@@ -1,0 +1,108 @@
+#!/bin/bash
+set -u
+
+HOST="${1:-172.18.14.9}"
+PASS="${SMB_PASS:-cnyrocks}"
+USERS=(gloucester scituate leicester leominster tewksbury)
+SHARE="files"
+TESTFILE="/tmp/smb_debug_$$.txt"
+
+echo "smb-debug $(date)" > "$TESTFILE"
+
+section() {
+  printf '\n========== %s ==========\n' "$1"
+}
+
+run() {
+  echo
+  echo "+ $*"
+  eval "$@"
+}
+
+section "BASIC INFO"
+run "hostname"
+run "hostname -I 2>/dev/null || ip -4 addr"
+run "date"
+
+section "SERVICE STATUS"
+run "systemctl status smb --no-pager -l 2>/dev/null || true"
+run "systemctl status nmb --no-pager -l 2>/dev/null || true"
+
+section "LISTENING PORTS"
+run "ss -tulpn | egrep ':(22|445|139|137|138)\\b' || true"
+
+section "FIREWALL CHECK"
+run "nft list ruleset 2>/dev/null | egrep 'hook input|hook output|445|139|137|138|22|172\\.18\\.' || true"
+
+section "TABLES.SH CHECK"
+if [ -f ./tables.sh ]; then
+  run "grep -n 'SCORING_ENGINES\\|ip saddr !=\\|INBOUND_TCP\\|INBOUND_UDP\\|OUTBOUND_UDP\\|OUTBOUND_TCP' ./tables.sh || true"
+else
+  echo "tables.sh not found in current directory"
+fi
+
+section "SAMBA CONFIG WARNINGS"
+run "testparm -s 2>&1 | tee /tmp/testparm.$$"
+
+section "KEY SAMBA LINES"
+run "grep -RIn 'map to guest\\|guest ok\\|valid users\\|force group\\|force user\\|path *=\\|interfaces\\|bind interfaces only\\|hosts allow\\|hosts deny\\|include *=\\|read only *=\\|browseable *=\\|create mask\\|directory mask' /etc/samba /etc/samba.d 2>/dev/null || true"
+
+section "FILES SHARE FROM TESTPARM"
+run "awk '/^\\[files\\]/{flag=1;print;next}/^\\[.*\\]/{if(flag)exit}flag{print}' /tmp/testparm.$$"
+
+section "SCORING USERS"
+for u in "${USERS[@]}"; do
+  echo
+  echo "--- $u ---"
+  getent passwd "$u" || echo "MISSING passwd entry"
+  id "$u" 2>/dev/null || echo "MISSING id"
+  pdbedit -L 2>/dev/null | grep -E "^$u:" || echo "MISSING samba user"
+done
+
+section "GROUP / PATH PERMS"
+run "getent group smbscore || true"
+run "ls -ld /mnt/files"
+run "ls -ldZ /mnt/files 2>/dev/null || true"
+run "find /mnt/files -maxdepth 1 -type f | head -10 | xargs -r ls -lZ 2>/dev/null || true"
+
+section "DIRECT FS WRITE TESTS"
+for u in "${USERS[@]}"; do
+  echo
+  echo "--- filesystem test as $u ---"
+  su -s /bin/bash -c "touch /mnt/files/.fs_test_${u}_$$ && rm -f /mnt/files/.fs_test_${u}_$$" "$u" \
+    && echo "FS WRITE OK for $u" \
+    || echo "FS WRITE FAIL for $u"
+done
+
+section "LOCALHOST SMB TESTS"
+for u in "${USERS[@]}"; do
+  echo
+  echo "--- smbclient localhost as $u ---"
+  timeout 10 smbclient -L "//localhost" -U "${u}%${PASS}" 2>&1 | tail -20
+  echo
+  timeout 10 smbclient "//localhost/${SHARE}" -U "${u}%${PASS}" -c "ls" 2>&1 | tail -20
+done
+
+section "HOST SMB TESTS"
+for u in "${USERS[@]}"; do
+  echo
+  echo "--- smbclient ${HOST} as $u ---"
+  timeout 10 smbclient -L "//${HOST}" -U "${u}%${PASS}" 2>&1 | tail -20
+  echo
+  timeout 10 smbclient "//${HOST}/${SHARE}" -U "${u}%${PASS}" -c "ls" 2>&1 | tail -20
+done
+
+section "WRITE TESTS"
+for u in "${USERS[@]}"; do
+  echo
+  echo "--- write test as $u ---"
+  timeout 10 smbclient "//${HOST}/${SHARE}" -U "${u}%${PASS}" -c "put ${TESTFILE} zz_${u}_$$.txt; ls zz_${u}_$$.txt; del zz_${u}_$$.txt" 2>&1 | tail -30
+done
+
+section "RECENT LOGS"
+run "journalctl -u smb -u nmb -n 80 --no-pager 2>/dev/null || true"
+
+section "DONE"
+echo "Host tested: ${HOST}"
+echo "Password used from SMB_PASS or default cnyrocks"
+rm -f "$TESTFILE" /tmp/testparm.$$
