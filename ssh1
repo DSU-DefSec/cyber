@@ -1,0 +1,32 @@
+echo '=== passwd entries ==='
+for u in gloucester leicester leominster scituate tewksbury; do
+  getent passwd "$u"
+done
+
+echo
+echo '=== shells / locks / expiry ==='
+for u in gloucester leicester leominster scituate tewksbury; do
+  echo "--- $u ---"
+  passwd -S "$u" 2>/dev/null
+  chage -l "$u" 2>/dev/null | sed 's/^/  /'
+done
+
+echo
+echo '=== ownership / perms ==='
+for u in gloucester leicester leominster scituate tewksbury; do
+  echo "--- $u ---"
+  home=$(getent passwd "$u" | cut -d: -f6)
+  ls -ld "$home" "$home/.ssh" "$home/.ssh/authorized_keys" 2>/dev/null
+done
+
+echo
+echo '=== key file hashes ==='
+for u in gloucester leicester leominster scituate tewksbury; do
+  home=$(getent passwd "$u" | cut -d: -f6)
+  echo -n "$u "
+  sha1sum "$home/.ssh/authorized_keys" 2>/dev/null || echo MISSING
+done
+
+echo
+echo '=== sshd clues ==='
+journalctl -u sshd -n 100 --no-pager | egrep 'gloucester|leicester|leominster|scituate|tewksbury|Authentication refused|bad ownership|not allowed|invalid user|Failed'
