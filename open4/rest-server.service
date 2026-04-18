@@ -9,7 +9,7 @@ After=rest-server.socket
 Type=simple
 User=www-data
 Group=www-data
-ExecStart=/usr/local/bin/rest-server --path /nix
+ExecStart=/usr/local/bin/rest-server --path /nix --no-auth --tls
 Restart=always
 RestartSec=5
 
